@@ -1500,7 +1500,10 @@ function runReview(){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({stock_ids:ids})
   })
-  .then(r=>r.json())
+  .then(function(r){
+    if(!r.ok) return r.text().then(function(t){throw new Error('Server '+r.status+': '+t.substring(0,200));});
+    return r.json();
+  })
   .then(function(d){
     document.getElementById('reviewBtn').disabled=false;
     if(d.error){
@@ -2987,6 +2990,13 @@ def api_chu_review_run():
     Request: {"stock_ids": ["2330", "2454", ...]}
     若 stock_ids 為空，自動使用持股清單。
     """
+    try:
+        return _do_chu_review_run()
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        return jsonify({"error": f"覆盤執行失敗：{e}"}), 500
+
+def _do_chu_review_run():
     from strategies import discover_strategies, get_strategy
     from screener import compute_screener_indicators
     from data_fetcher import fetch_price, fetch_realtime_quote, fetch_industry_map
