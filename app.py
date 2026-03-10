@@ -644,7 +644,7 @@ def _run_intraday_scan():
         cache_file = None
         if os.path.exists(cache_dir):
             caches = sorted(
-                [f for f in os.listdir(cache_dir) if f.startswith("screener_") and f.endswith(".pkl")],
+                [f for f in os.listdir(cache_dir) if f.startswith("scan_") and f.endswith(".pkl")],
                 reverse=True
             )
             if caches:
