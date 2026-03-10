@@ -559,6 +559,14 @@ def fetch_institutional_batch(target_date=None, days=5, status=None):
         # ── TPEX 法人 fallback：FinMind ──
         if not tpex_inst_ok and FINMIND_TOKEN:
             try:
+                # 收集 TWSE T86 已有的 stock_id（避免重複）
+                twse_sids_today = set()
+                for sid, recs in all_records.items():
+                    for rec in recs:
+                        if rec["date"] == date_str:
+                            twse_sids_today.add(sid)
+                            break
+
                 fm_resp = requests.get(BASE_URL, params={
                     "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
                     "start_date": date_str,
@@ -570,6 +578,9 @@ def fetch_institutional_batch(target_date=None, days=5, status=None):
                     if fm_data.get("status") == 200:
                         for item in fm_data.get("data", []):
                             sid = item.get("stock_id", "")
+                            # 跳過 TWSE 已有的（避免重複）
+                            if sid in twse_sids_today:
+                                continue
                             name = item.get("name", "")
                             buy = int(item.get("buy", 0))
                             sell = int(item.get("sell", 0))
