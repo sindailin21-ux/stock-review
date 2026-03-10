@@ -47,6 +47,20 @@ import portfolio_store as ps
 app = Flask(__name__)
 
 
+@app.errorhandler(500)
+def handle_500(e):
+    import traceback
+    traceback.print_exc()
+    return jsonify({"error": f"伺服器錯誤：{e}"}), 500
+
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    import traceback
+    traceback.print_exc()
+    return jsonify({"error": f"未預期錯誤：{e}"}), 500
+
+
 def _sanitize_for_json(obj):
     """遞迴將 numpy 型別轉為 Python 原生型別，確保 JSON 可序列化"""
     if isinstance(obj, dict):
