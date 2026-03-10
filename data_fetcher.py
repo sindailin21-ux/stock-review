@@ -400,13 +400,86 @@ def fetch_stock_price_public(stock_id, exchange="twse", target_date=None, months
     return df
 
 
+def _batch_fetch_tpex_finmind(tpex_ids, target_date=None, months=5, status=None):
+    """
+    用 FinMind 逐股查詢 TPEX 股票歷史行情，但每股只 1 次呼叫（涵蓋全部月份）。
+    相比原本每股×每月各一次，API 呼叫量減少 80%（N 次 vs N×5 次）。
+    """
+    import time as _time
+    if not FINMIND_TOKEN:
+        return {}
+
+    if target_date:
+        end = datetime.strptime(target_date, "%Y-%m-%d")
+    else:
+        end = datetime.today()
+
+    # 計算 months 個月前的起始日
+    y = end.year
+    mo = end.month - (months - 1)
+    while mo <= 0:
+        mo += 12
+        y -= 1
+    start_date = f"{y}-{mo:02d}-01"
+    end_date = end.strftime("%Y-%m-%d")
+
+    result = {}
+    total = len(tpex_ids)
+    print(f"  📡 FinMind 逐股查詢 TPEX 歷史行情：{total} 檔（{start_date} ~ {end_date}）")
+
+    for i, sid in enumerate(tpex_ids):
+        try:
+            fm_resp = requests.get(BASE_URL, params={
+                "dataset": "TaiwanStockPrice",
+                "data_id": sid,
+                "start_date": start_date,
+                "end_date": end_date,
+                "token": FINMIND_TOKEN,
+            }, timeout=30)
+
+            if fm_resp.status_code == 200:
+                fm_data = fm_resp.json()
+                if fm_data.get("status") == 200 and fm_data.get("data"):
+                    rows = []
+                    for item in fm_data["data"]:
+                        rows.append({
+                            "date": item["date"],
+                            "open":  float(item.get("open", 0)),
+                            "high":  float(item.get("max", 0)),
+                            "low":   float(item.get("min", 0)),
+                            "close": float(item.get("close", 0)),
+                            "volume": int(item.get("Trading_Volume", 0)),
+                        })
+                    if rows:
+                        df = pd.DataFrame(rows)
+                        df["date"] = pd.to_datetime(df["date"])
+                        df = df.drop_duplicates("date").sort_values("date").reset_index(drop=True)
+                        if target_date:
+                            df = df[df["date"] <= target_date].copy()
+                        if not df.empty:
+                            result[sid] = df
+
+            if status:
+                status["current"] = f"載入 TPEX 行情：{sid}（{i+1}/{total}）"
+
+            if (i + 1) % 50 == 0:
+                print(f"  📊 TPEX 行情進度：{i+1}/{total}")
+
+            _time.sleep(0.15)  # 避免過快觸發 rate limit
+        except Exception as e:
+            print(f"  [警告] FinMind 查詢 {sid} 失敗：{e}")
+
+    print(f"  ✅ FinMind TPEX 完成：{len(result)}/{total} 檔")
+    return result
+
+
 def fetch_stock_prices_batch(stock_ids, exchange_map, target_date=None,
                              months=5, status=None):
     """
     批次抓取多支股票的歷史 OHLCV（多線程並行 TWSE/TPEX 公開 API）。
     exchange_map: dict[stock_id] → 'twse' 或 'tpex'
     回傳 dict[stock_id] → DataFrame(date, open, high, low, close, volume)。
-    使用 ThreadPoolExecutor(max_workers=10) 加速，預估 20 分鐘 → 2-3 分鐘。
+    TPEX 股票在直接 API 403 時，改用 FinMind 單次批次查詢（避免 rate limit）。
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     import threading
@@ -415,6 +488,40 @@ def fetch_stock_prices_batch(stock_ids, exchange_map, target_date=None,
     total = len(stock_ids)
     counter = {"done": 0}
     lock = threading.Lock()
+
+    # ── 分開 TWSE 與 TPEX 股票 ──
+    twse_ids = [s for s in stock_ids if exchange_map.get(s, "twse") == "twse"]
+    tpex_ids = [s for s in stock_ids if exchange_map.get(s, "twse") == "tpex"]
+
+    # ── TPEX：先測試直接 API 是否可用 ──
+    tpex_direct_ok = False
+    if tpex_ids:
+        try:
+            test_resp = requests.get(
+                "https://www.tpex.org.tw/www/zh-tw/afterTrading/tradingStock",
+                params={"date": datetime.today().strftime("%Y/%m/01"),
+                        "code": tpex_ids[0], "response": "json"},
+                timeout=10, headers=_PUB_HEADERS,
+            )
+            if test_resp.status_code != 403:
+                tpex_direct_ok = True
+                print(f"  ✅ TPEX 直接 API 可用")
+        except Exception:
+            pass
+
+        if not tpex_direct_ok:
+            # TPEX 403 → 用 FinMind 批次查詢取代逐股呼叫
+            print(f"  ⚠️ TPEX 直接 API 被封（403），改用 FinMind 批次查詢 {len(tpex_ids)} 檔")
+            if status:
+                status["current"] = f"FinMind 批次載入 TPEX 行情（{len(tpex_ids)} 檔）..."
+            tpex_result = _batch_fetch_tpex_finmind(tpex_ids, target_date, months, status)
+            result.update(tpex_result)
+            # 已處理的 TPEX 股票不需再逐股抓
+            with lock:
+                counter["done"] += len(tpex_ids)
+
+    # ── 需要逐股抓取的清單（TWSE + TPEX直接可用的） ──
+    remaining_ids = twse_ids + (tpex_ids if tpex_direct_ok else [])
 
     def _worker(sid):
         """單支股票抓取（工作線程）"""
@@ -437,23 +544,24 @@ def fetch_stock_prices_batch(stock_ids, exchange_map, target_date=None,
 
         return sid, df if not df.empty else None
 
-    print(f"📊 開始多線程抓取歷史行情：{total} 檔（10 threads）")
+    print(f"📊 開始抓取歷史行情：{total} 檔（TWSE {len(twse_ids)} + TPEX {len(tpex_ids)}）")
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        future_map = {executor.submit(_worker, sid): sid for sid in stock_ids}
-        for future in as_completed(future_map):
-            try:
-                sid, df = future.result()
-                if df is not None:
-                    result[sid] = df
-            except Exception as e:
-                print(f"  [錯誤] 歷史行情抓取：{e}")
+    if remaining_ids:
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_map = {executor.submit(_worker, sid): sid for sid in remaining_ids}
+            for future in as_completed(future_map):
+                try:
+                    sid, df = future.result()
+                    if df is not None:
+                        result[sid] = df
+                except Exception as e:
+                    print(f"  [錯誤] 歷史行情抓取：{e}")
 
-            # 取消檢查
-            if status and status.get("cancel"):
-                for f in future_map:
-                    f.cancel()
-                break
+                # 取消檢查
+                if status and status.get("cancel"):
+                    for f in future_map:
+                        f.cancel()
+                    break
 
     print(f"📊 歷史行情完成：{len(result)} / {total} 檔 × {months} 月")
     return result
