@@ -348,7 +348,7 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
     import pickle, os, hashlib
 
     from data_fetcher import fetch_market_daily
-    from data_fetcher import fetch_stock_prices_batch, fetch_institutional_batch, fetch_industry_map
+    from data_fetcher import fetch_stock_prices_batch, fetch_institutional_batch, fetch_industry_map, fetch_institutional_single
     from data_fetcher import fetch_revenue
     from fundamentals import get_revenue_summary
     from screener import scan_stocks
@@ -488,7 +488,15 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
             return price_cache.get(sid, pd.DataFrame())
 
         def _fetch_inst_cached(sid):
-            return inst_cache.get(sid, pd.DataFrame())
+            if sid in inst_cache:
+                return inst_cache[sid]
+            # TPEX 法人全市場被封時，按需逐股從 FinMind 查詢
+            if exchange_map.get(sid) == "tpex":
+                df = fetch_institutional_single(sid)
+                if not df.empty:
+                    inst_cache[sid] = df
+                return df
+            return pd.DataFrame()
 
         def _get_name_cached(sid, price_df):
             if sid in name_map:

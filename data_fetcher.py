@@ -664,65 +664,10 @@ def fetch_institutional_batch(target_date=None, days=5, status=None):
         except Exception as e:
             print(f"  [TPEX法人] {date_str}: {e}")
 
-        # ── TPEX 法人 fallback：FinMind ──
-        if not tpex_inst_ok and FINMIND_TOKEN:
-            try:
-                # 收集 TWSE T86 已有的 stock_id（避免重複）
-                twse_sids_today = set()
-                for sid, recs in all_records.items():
-                    for rec in recs:
-                        if rec["date"] == date_str:
-                            twse_sids_today.add(sid)
-                            break
-
-                fm_resp = requests.get(BASE_URL, params={
-                    "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
-                    "start_date": date_str,
-                    "end_date": date_str,
-                    "token": FINMIND_TOKEN,
-                }, timeout=20)
-                if fm_resp.status_code == 200:
-                    fm_data = fm_resp.json()
-                    if fm_data.get("status") == 200:
-                        for item in fm_data.get("data", []):
-                            sid = item.get("stock_id", "")
-                            # 跳過 TWSE 已有的（避免重複）
-                            if sid in twse_sids_today:
-                                continue
-                            name = item.get("name", "")
-                            buy = int(item.get("buy", 0))
-                            sell = int(item.get("sell", 0))
-                            if name == "Foreign_Investor":
-                                all_records.setdefault(sid, []).append({
-                                    "date": date_str,
-                                    "Foreign_Investor_Buy": buy,
-                                    "Foreign_Investor_Sell": sell,
-                                    "Investment_Trust_Buy": 0,
-                                    "Investment_Trust_Sell": 0,
-                                })
-                            elif name == "Investment_Trust":
-                                # 合併到同一筆
-                                existing = None
-                                for rec in all_records.get(sid, []):
-                                    if rec["date"] == date_str:
-                                        existing = rec
-                                        break
-                                if existing:
-                                    existing["Investment_Trust_Buy"] = buy
-                                    existing["Investment_Trust_Sell"] = sell
-                                else:
-                                    all_records.setdefault(sid, []).append({
-                                        "date": date_str,
-                                        "Foreign_Investor_Buy": 0,
-                                        "Foreign_Investor_Sell": 0,
-                                        "Investment_Trust_Buy": buy,
-                                        "Investment_Trust_Sell": sell,
-                                    })
-                        if not day_has_data:
-                            day_has_data = True
-                        print(f"  [TPEX法人] {date_str}: FinMind fallback OK")
-            except Exception as e2:
-                print(f"  [TPEX法人 FinMind fallback] {date_str}: {e2}")
+        # ── TPEX 法人 fallback：跳過（免費 FinMind 不支援全市場查詢）──
+        if not tpex_inst_ok:
+            if days_collected == 0:
+                print(f"  [TPEX法人] {date_str}: 403 被封，TPEX 法人將在掃描時按需查詢")
 
         if day_has_data:
             days_collected += 1
@@ -740,6 +685,69 @@ def fetch_institutional_batch(target_date=None, days=5, status=None):
 
     print(f"🏦 法人籌碼：{len(result)} 檔 × {days_collected} 交易日")
     return result
+
+
+def fetch_institutional_single(stock_id, days=5):
+    """
+    用 FinMind 查詢單一股票的法人買賣超（近 N 天）。
+    用於 TPEX 法人全市場查詢被封時的按需 fallback。
+    回傳 DataFrame(date, Foreign_Investor_Buy/Sell, Investment_Trust_Buy/Sell)。
+    """
+    if not FINMIND_TOKEN:
+        return pd.DataFrame()
+
+    end = datetime.today()
+    start = end - timedelta(days=days * 3 + 10)  # 多抓一些確保有足夠交易日
+
+    try:
+        fm_resp = requests.get(BASE_URL, params={
+            "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+            "data_id": stock_id,
+            "start_date": start.strftime("%Y-%m-%d"),
+            "end_date": end.strftime("%Y-%m-%d"),
+            "token": FINMIND_TOKEN,
+        }, timeout=20)
+
+        if fm_resp.status_code != 200:
+            return pd.DataFrame()
+
+        fm_data = fm_resp.json()
+        if fm_data.get("status") != 200 or not fm_data.get("data"):
+            return pd.DataFrame()
+
+        # FinMind 回傳長格式（每天 × 每種法人一筆），需轉為寬格式
+        records = {}
+        for item in fm_data["data"]:
+            date_str = item["date"]
+            name = item.get("name", "")
+            buy = int(item.get("buy", 0))
+            sell = int(item.get("sell", 0))
+
+            if date_str not in records:
+                records[date_str] = {
+                    "date": date_str,
+                    "Foreign_Investor_Buy": 0,
+                    "Foreign_Investor_Sell": 0,
+                    "Investment_Trust_Buy": 0,
+                    "Investment_Trust_Sell": 0,
+                }
+
+            if name == "Foreign_Investor":
+                records[date_str]["Foreign_Investor_Buy"] = buy
+                records[date_str]["Foreign_Investor_Sell"] = sell
+            elif name == "Investment_Trust":
+                records[date_str]["Investment_Trust_Buy"] = buy
+                records[date_str]["Investment_Trust_Sell"] = sell
+
+        if not records:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(list(records.values()))
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.sort_values("date").tail(days).reset_index(drop=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
 
 
 # ── 技術面 ──────────────────────────────────────────────────
