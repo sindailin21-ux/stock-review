@@ -115,6 +115,7 @@ def fetch_market_daily(date=None):
         print(f"  [錯誤] TWSE 上市行情：{e}")
 
     # ── TPEX 上櫃（需精確日期，若當日無資料則往回找最近交易日）──
+    tpex_ok = False
     try:
         if date:
             dt = datetime.strptime(date, "%Y-%m-%d")
@@ -150,11 +151,61 @@ def fetch_market_daily(date=None):
 
             if otc_count > 0:
                 print(f"  TPEX 上櫃：{otc_count} 檔（{tw_date}）")
+                tpex_ok = True
                 break
         else:
             print(f"  TPEX 上櫃：0 檔（近 5 天皆無資料）")
     except Exception as e:
-        print(f"  [錯誤] TPEX 上櫃行情：{e}")
+        print(f"  [錯誤] TPEX 上櫃行情：{e}，嘗試 FinMind fallback...")
+
+    # ── TPEX fallback：改用 FinMind TaiwanStockPrice ──
+    if not tpex_ok and FINMIND_TOKEN:
+        try:
+            query_date = date or datetime.today().strftime("%Y-%m-%d")
+            fm_resp = requests.get(BASE_URL, params={
+                "dataset": "TaiwanStockPrice",
+                "start_date": query_date,
+                "end_date": query_date,
+                "token": FINMIND_TOKEN,
+            }, timeout=30)
+            fm_resp.raise_for_status()
+            fm_data = fm_resp.json()
+            if fm_data.get("status") == 200 and fm_data.get("data"):
+                # 取得上櫃股清單以過濾
+                otc_ids = set()
+                try:
+                    info_resp = requests.get(BASE_URL, params={
+                        "dataset": "TaiwanStockInfo",
+                        "token": FINMIND_TOKEN,
+                    }, timeout=30)
+                    if info_resp.status_code == 200:
+                        for item in info_resp.json().get("data", []):
+                            if item.get("type") == "tpex":
+                                otc_ids.add(item["stock_id"])
+                except Exception:
+                    pass
+
+                otc_count = 0
+                for item in fm_data["data"]:
+                    sid = item.get("stock_id", "")
+                    # 如果有上櫃清單就用，沒有就用股號猜測
+                    if otc_ids:
+                        if sid not in otc_ids:
+                            continue
+                    else:
+                        if not sid[:1].isdigit() or len(sid) != 4:
+                            continue
+                    rows.append({
+                        "stock_id": sid,
+                        "name": item.get("stock_name", sid),
+                        "exchange": "tpex",
+                        "Trading_Volume": int(item.get("Trading_Volume", 0)),
+                        "Trading_Money": int(item.get("Trading_Money", 0)),
+                    })
+                    otc_count += 1
+                print(f"  TPEX 上櫃（FinMind fallback）：{otc_count} 檔")
+        except Exception as e:
+            print(f"  [錯誤] FinMind TPEX fallback：{e}")
 
     if not rows:
         print("  [警告] 全市場行情：無資料（可能為非交易日）")
@@ -238,6 +289,7 @@ def _fetch_tpex_monthly(stock_id, yyyy_mm_dd):
     yyyy_mm_dd 格式: 'YYYY/MM/DD'（西元，任一天即可，回傳整月）。
     回傳 list[dict]，每筆 {date, open, high, low, close, volume(股)}。
     注意：TPEX 成交張數 × 1000 = 股數。
+    403 時 fallback 到 FinMind TaiwanStockPrice。
     """
     rows = []
     try:
@@ -246,6 +298,8 @@ def _fetch_tpex_monthly(stock_id, yyyy_mm_dd):
             params={"date": yyyy_mm_dd, "code": stock_id, "response": "json"},
             timeout=15, headers=_PUB_HEADERS,
         )
+        if resp.status_code == 403:
+            raise requests.exceptions.HTTPError("403 Forbidden")
         if resp.status_code != 200:
             return rows
         data = resp.json()
@@ -269,7 +323,37 @@ def _fetch_tpex_monthly(stock_id, yyyy_mm_dd):
             except (IndexError, KeyError, ValueError):
                 continue
     except Exception:
-        pass
+        # Fallback: FinMind TaiwanStockPrice
+        if FINMIND_TOKEN:
+            try:
+                # 從 yyyy_mm_dd ('YYYY/MM/DD') 解析月份範圍
+                parts = yyyy_mm_dd.split("/")
+                y, m = int(parts[0]), int(parts[1])
+                import calendar
+                _, last_day = calendar.monthrange(y, m)
+                start = f"{y}-{m:02d}-01"
+                end = f"{y}-{m:02d}-{last_day:02d}"
+                fm_resp = requests.get(BASE_URL, params={
+                    "dataset": "TaiwanStockPrice",
+                    "data_id": stock_id,
+                    "start_date": start,
+                    "end_date": end,
+                    "token": FINMIND_TOKEN,
+                }, timeout=15)
+                if fm_resp.status_code == 200:
+                    fm_data = fm_resp.json()
+                    if fm_data.get("status") == 200:
+                        for item in fm_data.get("data", []):
+                            rows.append({
+                                "date": item["date"],
+                                "open":  float(item.get("open", 0)),
+                                "high":  float(item.get("max", 0)),
+                                "low":   float(item.get("min", 0)),
+                                "close": float(item.get("close", 0)),
+                                "volume": int(item.get("Trading_Volume", 0)),
+                            })
+            except Exception:
+                pass
     return rows
 
 
@@ -443,12 +527,15 @@ def fetch_institutional_batch(target_date=None, days=5, status=None):
         # ── TPEX 法人 ──
         # fields: 代號(0), 名稱(1), 外資買(2), 外資賣(3), 外資超(4),
         #         投信買(5), 投信賣(6), 投信超(7), ...
+        tpex_inst_ok = False
         try:
             resp = requests.get(
                 "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php",
                 params={"l": "zh-tw", "d": date_tpex, "se": "EW", "t": "D"},
                 timeout=20, headers=_PUB_HEADERS,
             )
+            if resp.status_code == 403:
+                raise requests.exceptions.HTTPError("403 Forbidden")
             if resp.status_code == 200:
                 for table in resp.json().get("tables", []):
                     for row in table.get("data", []):
@@ -465,8 +552,58 @@ def fetch_institutional_batch(target_date=None, days=5, status=None):
                                 day_has_data = True
                         except (IndexError, KeyError):
                             continue
+                tpex_inst_ok = True
         except Exception as e:
             print(f"  [TPEX法人] {date_str}: {e}")
+
+        # ── TPEX 法人 fallback：FinMind ──
+        if not tpex_inst_ok and FINMIND_TOKEN:
+            try:
+                fm_resp = requests.get(BASE_URL, params={
+                    "dataset": "TaiwanStockInstitutionalInvestorsBuySell",
+                    "start_date": date_str,
+                    "end_date": date_str,
+                    "token": FINMIND_TOKEN,
+                }, timeout=20)
+                if fm_resp.status_code == 200:
+                    fm_data = fm_resp.json()
+                    if fm_data.get("status") == 200:
+                        for item in fm_data.get("data", []):
+                            sid = item.get("stock_id", "")
+                            name = item.get("name", "")
+                            buy = int(item.get("buy", 0))
+                            sell = int(item.get("sell", 0))
+                            if name == "Foreign_Investor":
+                                all_records.setdefault(sid, []).append({
+                                    "date": date_str,
+                                    "Foreign_Investor_Buy": buy,
+                                    "Foreign_Investor_Sell": sell,
+                                    "Investment_Trust_Buy": 0,
+                                    "Investment_Trust_Sell": 0,
+                                })
+                            elif name == "Investment_Trust":
+                                # 合併到同一筆
+                                existing = None
+                                for rec in all_records.get(sid, []):
+                                    if rec["date"] == date_str:
+                                        existing = rec
+                                        break
+                                if existing:
+                                    existing["Investment_Trust_Buy"] = buy
+                                    existing["Investment_Trust_Sell"] = sell
+                                else:
+                                    all_records.setdefault(sid, []).append({
+                                        "date": date_str,
+                                        "Foreign_Investor_Buy": 0,
+                                        "Foreign_Investor_Sell": 0,
+                                        "Investment_Trust_Buy": buy,
+                                        "Investment_Trust_Sell": sell,
+                                    })
+                        if not day_has_data:
+                            day_has_data = True
+                        print(f"  [TPEX法人] {date_str}: FinMind fallback OK")
+            except Exception as e2:
+                print(f"  [TPEX法人 FinMind fallback] {date_str}: {e2}")
 
         if day_has_data:
             days_collected += 1
