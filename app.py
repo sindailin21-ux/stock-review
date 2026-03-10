@@ -1498,6 +1498,7 @@ function loadFromPortfolio(){
   });
 }
 
+var reviewPollTimer=null;
 function runReview(){
   var raw=document.getElementById('stockInput').value.trim();
   if(!raw){alert('請輸入股票代號');return;}
@@ -1505,7 +1506,7 @@ function runReview(){
   if(!ids.length){alert('請輸入至少一個股票代號');return;}
 
   document.getElementById('reviewBtn').disabled=true;
-  document.getElementById('statusNote').textContent='覆盤中...';
+  document.getElementById('statusNote').textContent='覆盤啟動中...';
   document.getElementById('summaryCard').style.display='none';
   document.getElementById('resultArea').innerHTML='';
 
@@ -1514,25 +1515,26 @@ function runReview(){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({stock_ids:ids})
   })
-  .then(function(r){
-    if(!r.ok) return r.text().then(function(t){throw new Error('Server '+r.status+': '+t.substring(0,200));});
-    return r.json();
-  })
+  .then(function(r){return r.json();})
   .then(function(d){
+    if(d.error){document.getElementById('reviewBtn').disabled=false;document.getElementById('statusNote').textContent=d.error;return;}
+    reviewPollTimer=setInterval(pollReview,2000);
+  })
+  .catch(function(e){document.getElementById('reviewBtn').disabled=false;document.getElementById('statusNote').textContent='啟動失敗：'+e;});
+}
+function pollReview(){
+  fetch('/api/chu-review/status').then(function(r){return r.json();}).then(function(s){
+    document.getElementById('statusNote').textContent=s.current||'覆盤中...';
+    if(!s.done) return;
+    clearInterval(reviewPollTimer);
     document.getElementById('reviewBtn').disabled=false;
-    if(d.error){
-      document.getElementById('statusNote').textContent=d.error;
-      return;
-    }
+    if(s.error){document.getElementById('statusNote').textContent='覆盤失敗：'+s.error;return;}
+    var d=s.result;
     var intraTag=d.is_intraday?' <span style="color:#10b981;font-size:12px;">🟢 即時盤價</span>':' <span style="color:var(--text2);font-size:12px;">📦 收盤資料</span>';
     document.getElementById('statusNote').innerHTML='覆盤完成 ('+d.date+')'+intraTag;
     renderSummary(d.summary);
     renderResults(d.reviews);
-  })
-  .catch(function(e){
-    document.getElementById('reviewBtn').disabled=false;
-    document.getElementById('statusNote').textContent='覆盤失敗：'+e;
-  });
+  }).catch(function(){});
 }
 
 function renderSummary(s){
@@ -2994,166 +2996,174 @@ def api_telegram_batch():
 
 
 # ═══════════════════════════════════════════════════════════
-# 路由：朱家泓覆盤 API
+# 路由：朱家泓覆盤 API（背景線程 + polling）
 # ═══════════════════════════════════════════════════════════
+
+_chu_review_status = {
+    "running": False, "done": False, "error": None,
+    "progress": 0, "total": 0, "current": "",
+    "result": None,
+}
+
+
+def _run_chu_review_bg(stock_ids):
+    """背景線程執行覆盤，避免 gunicorn timeout。"""
+    global _chu_review_status
+    try:
+        _chu_review_status["running"] = True
+        _chu_review_status["done"] = False
+        _chu_review_status["error"] = None
+        _chu_review_status["result"] = None
+
+        from strategies import discover_strategies, get_strategy
+        from screener import compute_screener_indicators
+        from data_fetcher import fetch_price, fetch_realtime_quote, fetch_industry_map
+        from datetime import date as _date
+
+        discover_strategies()
+        chu_info = get_strategy("G")
+        if chu_info is None or chu_info.review_func is None:
+            _chu_review_status["error"] = "朱家泓覆盤策略未註冊"
+            return
+
+        _chu_review_status["current"] = "載入產業分類..."
+        try:
+            ind_map = fetch_industry_map()
+        except Exception:
+            ind_map = {}
+
+        today_str = _date.today().strftime("%Y-%m-%d")
+        reviews = []
+        summary = {"total": 0, "healthy": 0, "reduce": 0, "alert": 0, "take_profit": 0, "buy_point": 0}
+        is_intraday = False
+        _chu_review_status["total"] = len(stock_ids)
+
+        for i, sid in enumerate(stock_ids):
+            _chu_review_status["progress"] = i + 1
+            _chu_review_status["current"] = f"覆盤 {sid}（{i+1}/{len(stock_ids)}）"
+
+            try:
+                price_df = fetch_price(sid)
+                if price_df.empty or len(price_df) < 20:
+                    reviews.append({
+                        "stock_id": sid, "name": sid, "close": None, "change_pct": 0,
+                        "review": {"status": "healthy", "signals": [], "ma_status": {}, "k_bar": {}, "summary": "無足夠資料"},
+                    })
+                    summary["total"] += 1
+                    summary["healthy"] += 1
+                    continue
+
+                rt = fetch_realtime_quote(sid)
+                rt_time = None
+                if rt and rt["price"]:
+                    rt_date_str = rt.get("date", "")
+                    rt_time = rt.get("time", "")
+                    if rt_date_str:
+                        rt_date = pd.Timestamp(f"{rt_date_str[:4]}-{rt_date_str[4:6]}-{rt_date_str[6:8]}")
+                        last_hist_date = price_df["date"].iloc[-1]
+                        if rt_date > last_hist_date:
+                            new_row = pd.DataFrame([{
+                                "date": rt_date,
+                                "open": rt.get("open") or rt["price"],
+                                "high": rt.get("high") or rt["price"],
+                                "low": rt.get("low") or rt["price"],
+                                "close": rt["price"],
+                                "volume": rt.get("volume", 0),
+                            }])
+                            price_df = pd.concat([price_df, new_row], ignore_index=True)
+                            is_intraday = True
+                        elif rt_date == last_hist_date:
+                            price_df.loc[price_df.index[-1], "close"] = rt["price"]
+                            if rt.get("high"):
+                                price_df.loc[price_df.index[-1], "high"] = rt["high"]
+                            if rt.get("low"):
+                                price_df.loc[price_df.index[-1], "low"] = rt["low"]
+                            if rt.get("volume"):
+                                price_df.loc[price_df.index[-1], "volume"] = rt["volume"]
+                            is_intraday = True
+
+                enriched = compute_screener_indicators(price_df)
+                last = enriched.iloc[-1]
+                prev = enriched.iloc[-2] if len(enriched) >= 2 else last
+                close = float(last["close"])
+                change_pct = round((last["close"] - prev["close"]) / prev["close"] * 100, 2) if prev["close"] else 0
+
+                name = rt.get("name", sid) if rt else sid
+                if name == sid and "stock_name" in price_df.columns:
+                    name = str(price_df["stock_name"].iloc[-1]) if pd.notna(price_df["stock_name"].iloc[-1]) else sid
+                holding = ps.get_by_id(sid)
+                if holding:
+                    name = holding.get("name", name)
+
+                review = chu_info.review_func(enriched)
+                review_item = {
+                    "stock_id": sid, "name": name, "industry": ind_map.get(sid, ""),
+                    "close": close, "change_pct": change_pct, "review": review,
+                }
+                if rt_time:
+                    review_item["rt_time"] = rt_time
+                reviews.append(review_item)
+
+                summary["total"] += 1
+                st = review.get("status", "healthy")
+                if st in summary:
+                    summary[st] += 1
+
+            except Exception as e:
+                print(f"朱家泓覆盤 {sid} 失敗：{e}")
+                reviews.append({
+                    "stock_id": sid, "name": sid, "close": None, "change_pct": 0,
+                    "review": {"status": "healthy", "signals": [], "ma_status": {}, "k_bar": {}, "summary": f"覆盤失敗：{e}"},
+                })
+                summary["total"] += 1
+                summary["healthy"] += 1
+
+        _chu_review_status["result"] = _sanitize_for_json({
+            "date": today_str, "reviews": reviews, "summary": summary, "is_intraday": is_intraday,
+        })
+
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        _chu_review_status["error"] = str(e)
+    finally:
+        _chu_review_status["done"] = True
+        _chu_review_status["running"] = False
+
 
 @app.route("/api/chu-review/run", methods=["POST"])
 def api_chu_review_run():
-    """
-    執行朱家泓每日持股覆盤。
-    Request: {"stock_ids": ["2330", "2454", ...]}
-    若 stock_ids 為空，自動使用持股清單。
-    """
-    try:
-        return _do_chu_review_run()
-    except Exception as e:
-        import traceback; traceback.print_exc()
-        return jsonify({"error": f"覆盤執行失敗：{e}"}), 500
-
-def _do_chu_review_run():
-    from strategies import discover_strategies, get_strategy
-    from screener import compute_screener_indicators
-    from data_fetcher import fetch_price, fetch_realtime_quote, fetch_industry_map
-    from datetime import date, datetime as _dt
-
-    discover_strategies()
-    chu_info = get_strategy("G")
-    if chu_info is None or chu_info.review_func is None:
-        return jsonify({"error": "朱家泓覆盤策略未註冊"}), 500
+    global _chu_review_status
+    if _chu_review_status.get("running"):
+        return jsonify({"started": True, "msg": "已在執行中"})
 
     data = request.json or {}
     stock_ids = data.get("stock_ids", [])
-
-    # 若未提供，從持股帶入
     if not stock_ids:
         stock_ids = [p["stock_id"] for p in ps.get_all()]
     if not stock_ids:
         return jsonify({"error": "請提供股票代號或先建立持股"}), 400
 
-    # 取得產業分類（TWSE/TPEX 公開資料，不耗 FinMind 額度）
-    try:
-        ind_map = fetch_industry_map()
-    except Exception:
-        ind_map = {}
+    _chu_review_status = {
+        "running": False, "done": False, "error": None,
+        "progress": 0, "total": len(stock_ids), "current": "啟動中...",
+        "result": None,
+    }
+    t = threading.Thread(target=_run_chu_review_bg, args=(stock_ids,), daemon=True)
+    t.start()
+    return jsonify({"started": True})
 
-    today_str = date.today().strftime("%Y-%m-%d")
-    reviews = []
-    summary = {"total": 0, "healthy": 0, "reduce": 0, "alert": 0, "take_profit": 0, "buy_point": 0}
-    is_intraday = False  # 是否有即時資料
 
-    for sid in stock_ids:
-        try:
-            # 逐檔抓取歷史價格資料（透過 FinMind API）
-            price_df = fetch_price(sid)
-            if price_df.empty or len(price_df) < 20:
-                reviews.append({
-                    "stock_id": sid,
-                    "name": sid,
-                    "close": None,
-                    "change_pct": 0,
-                    "review": {
-                        "status": "healthy",
-                        "signals": [],
-                        "ma_status": {},
-                        "k_bar": {},
-                        "summary": "無足夠資料",
-                    },
-                })
-                summary["total"] += 1
-                summary["healthy"] += 1
-                continue
-
-            # ── 嘗試取得即時盤價，合併到歷史資料 ──
-            rt = fetch_realtime_quote(sid)
-            rt_time = None
-            if rt and rt["price"]:
-                rt_date_str = rt.get("date", "")  # "20260306"
-                rt_time = rt.get("time", "")
-                if rt_date_str:
-                    rt_date = pd.Timestamp(f"{rt_date_str[:4]}-{rt_date_str[4:6]}-{rt_date_str[6:8]}")
-                    last_hist_date = price_df["date"].iloc[-1]
-                    if rt_date > last_hist_date:
-                        # 今日即時資料尚未出現在歷史中，附加一行
-                        new_row = pd.DataFrame([{
-                            "date": rt_date,
-                            "open": rt.get("open") or rt["price"],
-                            "high": rt.get("high") or rt["price"],
-                            "low": rt.get("low") or rt["price"],
-                            "close": rt["price"],
-                            "volume": rt.get("volume", 0),
-                        }])
-                        price_df = pd.concat([price_df, new_row], ignore_index=True)
-                        is_intraday = True
-                    elif rt_date == last_hist_date:
-                        # 歷史已有今日資料，但盤中價格更即時，更新收盤價
-                        price_df.loc[price_df.index[-1], "close"] = rt["price"]
-                        if rt.get("high"):
-                            price_df.loc[price_df.index[-1], "high"] = rt["high"]
-                        if rt.get("low"):
-                            price_df.loc[price_df.index[-1], "low"] = rt["low"]
-                        if rt.get("volume"):
-                            price_df.loc[price_df.index[-1], "volume"] = rt["volume"]
-                        is_intraday = True
-
-            enriched = compute_screener_indicators(price_df)
-            last = enriched.iloc[-1]
-            prev = enriched.iloc[-2] if len(enriched) >= 2 else last
-            close = float(last["close"])
-            change_pct = round((last["close"] - prev["close"]) / prev["close"] * 100, 2) if prev["close"] else 0
-
-            # 取得股票名稱
-            name = rt.get("name", sid) if rt else sid
-            if name == sid and "stock_name" in price_df.columns:
-                name = str(price_df["stock_name"].iloc[-1]) if pd.notna(price_df["stock_name"].iloc[-1]) else sid
-            # 嘗試從持股取得名稱
-            holding = ps.get_by_id(sid)
-            if holding:
-                name = holding.get("name", name)
-
-            # 執行覆盤
-            review = chu_info.review_func(enriched)
-
-            review_item = {
-                "stock_id": sid,
-                "name": name,
-                "industry": ind_map.get(sid, ""),
-                "close": close,
-                "change_pct": change_pct,
-                "review": review,
-            }
-            if rt_time:
-                review_item["rt_time"] = rt_time
-            reviews.append(review_item)
-
-            summary["total"] += 1
-            st = review.get("status", "healthy")
-            if st in summary:
-                summary[st] += 1
-
-        except Exception as e:
-            print(f"朱家泓覆盤 {sid} 失敗：{e}")
-            reviews.append({
-                "stock_id": sid,
-                "name": sid,
-                "close": None,
-                "change_pct": 0,
-                "review": {
-                    "status": "healthy",
-                    "signals": [],
-                    "ma_status": {},
-                    "k_bar": {},
-                    "summary": f"覆盤失敗：{e}",
-                },
-            })
-            summary["total"] += 1
-            summary["healthy"] += 1
-
-    return jsonify(_sanitize_for_json({
-        "date": today_str,
-        "reviews": reviews,
-        "summary": summary,
-        "is_intraday": is_intraday,
-    }))
+@app.route("/api/chu-review/status", methods=["GET"])
+def api_chu_review_status():
+    return jsonify({
+        "running": _chu_review_status["running"],
+        "done": _chu_review_status["done"],
+        "progress": _chu_review_status["progress"],
+        "total": _chu_review_status["total"],
+        "current": _chu_review_status["current"],
+        "error": _chu_review_status["error"],
+        "result": _chu_review_status["result"],
+    })
 
 
 # ═══════════════════════════════════════════════════════════
