@@ -253,19 +253,33 @@ def check_pullback_buy_point(df: pd.DataFrame) -> dict:
         "desc": f"收盤{close:.0f} vs MA20 {ma20_f:.0f}（需0~5%）",
     })
 
-    # ── 條件 2：縮量洗盤 ──
-    shrink_count = 0
+    # ── 條件 2：縮量洗盤（與前波爆量比） ──
+    # 找近 20 根 K 線中的最大成交量作為「前波爆量」
+    lookback_vol = min(20, len(df))
+    peak_vol = float(df["volume"].iloc[-lookback_vol:].max())
+    # 取回檔期間（前 3 日，不含今日）的平均量
+    shrink_avg = 0.0
     if len(df) >= 4:
-        for i in range(-4, -1):
-            day_vol = float(df["volume"].iloc[i])
-            if day_vol < vol_ma5_f:
-                shrink_count += 1
-    step2_ok = shrink_count >= 2
+        shrink_vols = [float(df["volume"].iloc[i]) for i in range(-4, -1)]
+        shrink_avg = sum(shrink_vols) / len(shrink_vols)
+    # 計算縮量比例
+    vol_ratio_pct = round(shrink_avg / peak_vol * 100, 1) if peak_vol > 0 else 100.0
+    # 判定：需 ≤ 50%（初步洗盤門檻）
+    step2_ok = vol_ratio_pct <= 50
+    # 分級描述
+    if vol_ratio_pct <= 25:
+        shrink_level = "窒息量（轉折點）"
+    elif vol_ratio_pct <= 40:
+        shrink_level = "洗盤完成（準備發動）"
+    elif vol_ratio_pct <= 50:
+        shrink_level = "初步洗盤（觀察期）"
+    else:
+        shrink_level = "尚未縮量"
     steps.append({
         "name": "縮量洗盤",
         "ok": step2_ok,
-        "value": f"{shrink_count}/3日",
-        "desc": f"前3日縮量{shrink_count}日（需≥2）",
+        "value": f"{vol_ratio_pct:.0f}%",
+        "desc": f"回檔均量/前波爆量={vol_ratio_pct:.0f}%（需≤50%）{shrink_level}",
     })
 
     # ── 條件 3：轉強確認 ──
@@ -302,7 +316,7 @@ def check_pullback_buy_point(df: pd.DataFrame) -> dict:
         result["triggered"] = True
         result["detail"] = (
             f"回檔至MA20附近(距{dist_ma20:+.1f}%)，"
-            f"前3日縮量{shrink_count}日，"
+            f"縮量比{vol_ratio_pct:.0f}%({shrink_level})，"
             f"站上MA5(斜率{ma5_slope:+.1f})，"
             f"扣抵值{deduct_val:.0f}(↑)"
         )

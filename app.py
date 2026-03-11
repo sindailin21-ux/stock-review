@@ -2661,15 +2661,23 @@ function renderTable(rows){
       extras.push('<span class="badge badge-green" style="font-size:10px;">🎯 停利起算 '+h.trail_start_price+' (+'+h.trail_stop_pct+'%後從高點回落15%出場)</span>');
       extras.push('<span class="badge badge-gray" style="font-size:10px;">⏱ 最少持有'+h.min_hold_days+'天 | 風報比 1:'+h.rr_ratio+'</span>');
     }
-    // 買點診斷：僅顯示不通過的步驟
+    // 買點診斷
     var steps=r.pullback_steps||[];
-    var failSteps=steps.filter(function(s){return !s.ok;});
-    if(failSteps.length>0&&failSteps.length<4){
+    if(steps.length){
+      // 永遠顯示縮量洗盤程度
+      var volStep=steps.filter(function(s){return s.name==='縮量洗盤';})[0];
+      if(volStep){
+        var vCls=volStep.ok?'badge-green':'badge-orange';
+        extras.push('<span class="badge '+vCls+'" style="font-size:10px;">📊 '+volStep.name+' '+volStep.value+' '+volStep.desc+'</span>');
+      }
+      // 顯示不通過的其他步驟
+      var failSteps=steps.filter(function(s){return !s.ok&&s.name!=='縮量洗盤';});
       failSteps.forEach(function(s){
         extras.push('<span class="badge badge-red" style="font-size:10px;">✗ '+s.name+' '+s.desc+'</span>');
       });
-    }else if(steps.length&&failSteps.length===0){
-      extras.push('<span class="badge badge-fire" style="font-size:10px;">✓ 四步全通過</span>');
+      if(steps.filter(function(s){return !s.ok;}).length===0){
+        extras.push('<span class="badge badge-fire" style="font-size:10px;">✓ 四步全通過</span>');
+      }
     }
     var row2='';
     if(extras.length){
