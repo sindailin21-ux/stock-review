@@ -37,8 +37,15 @@ import json
 import threading
 import numpy as np
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 from flask import Flask, request, jsonify, Response
 
 from config import FINMIND_TOKEN, ANTHROPIC_API_KEY, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
@@ -1825,6 +1832,7 @@ __NAV_STYLE__
 .badge-green{background:rgba(63,185,80,.15);color:var(--green);}
 .badge-red{background:rgba(248,81,73,.15);color:var(--red);}
 .badge-orange{background:rgba(255,166,87,.15);color:var(--orange);}
+.badge-blue{background:rgba(88,166,255,.15);color:var(--blue);}
 .badge-gray{background:var(--bg3);color:var(--text2);}
 .summary-card{display:flex;gap:16px;flex-wrap:wrap;align-items:center;}
 .summary-item{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:60px;}
@@ -1834,11 +1842,15 @@ __NAV_STYLE__
 .summary-num.orange{color:var(--orange);}
 .result-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;}
 .result-summary{font-size:13px;color:var(--text2);margin-bottom:12px;}
-table{width:100%;border-collapse:collapse;font-size:13px;}
+table{border-collapse:collapse;font-size:13px;}
 thead th{text-align:left;color:var(--text2);font-size:11px;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap;cursor:pointer;user-select:none;}
 thead th:hover{color:var(--text);}
-tbody td{padding:8px;border-bottom:1px solid var(--border);vertical-align:top;}
+thead th.th-r{text-align:right;}
+thead th.th-c{text-align:center;}
+tbody td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:middle;white-space:nowrap;}
 .td-num{text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;}
+.td-center{text-align:center;}
+.td-code{white-space:nowrap;}
 .td-code a{color:var(--blue);text-decoration:none;font-weight:600;font-family:'JetBrains Mono',monospace;font-size:12px;}
 .td-code a:hover{text-decoration:underline;}
 .score-all{color:var(--green);font-weight:700;}
@@ -1847,6 +1859,34 @@ tbody td{padding:8px;border-bottom:1px solid var(--border);vertical-align:top;}
 .sort-arrow{display:inline-block;width:12px;font-size:9px;color:var(--text2);}
 .sort-arrow.asc::after{content:'\\25B2';}
 .sort-arrow.desc::after{content:'\\25BC';}
+.strat-h{background:rgba(245,158,11,.2);color:#f59e0b;}
+.report-link{cursor:pointer;}
+.report-link:hover{opacity:.8;}
+/* modal */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;align-items:center;justify-content:center;z-index:999;padding:24px;}
+.modal-overlay.active{display:flex;}
+.modal-box{background:var(--bg2);border:1px solid var(--border);border-radius:14px;width:100%;max-width:680px;max-height:85vh;overflow-y:auto;padding:28px;position:relative;box-shadow:0 12px 40px rgba(0,0,0,.4);}
+.modal-close{position:absolute;top:12px;right:16px;background:none;border:none;color:var(--text2);font-size:22px;cursor:pointer;line-height:1;}
+.modal-close:hover{color:var(--text);}
+.modal-title{font-size:16px;font-weight:700;margin-bottom:16px;display:flex;align-items:center;gap:10px;}
+.modal-loading{text-align:center;padding:40px 0;color:var(--text2);}
+/* 摘要 tags */
+.summary-tags{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px;}
+.summary-tag{background:var(--bg3);padding:4px 10px;border-radius:6px;font-size:12px;}
+.summary-tag b{font-family:'JetBrains Mono',monospace;}
+/* check cards */
+.check-cards{display:flex;flex-direction:column;gap:10px;}
+.check-card{border-radius:10px;padding:14px 16px;}
+.check-card-pass{background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.3);}
+.check-card-fail{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.3);}
+.check-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.check-card-left{display:flex;align-items:center;gap:8px;}
+.check-card-icon{font-size:16px;}
+.check-card-name{font-weight:700;font-size:14px;color:var(--text);}
+.check-card-detail{font-size:12px;color:var(--text2);background:var(--bg2);padding:2px 8px;border-radius:4px;}
+.check-card-body{margin-top:6px;font-size:12px;color:var(--text2);display:flex;justify-content:space-between;}
+.check-card-body b{color:var(--text);font-family:'JetBrains Mono',monospace;}
+.check-desc{font-size:11px;color:var(--text2);margin-left:auto;}
 .spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto;}
 @keyframes spin{to{transform:rotate(360deg);}}
 </style>
@@ -1960,48 +2000,154 @@ function renderOverview(results){
   if(!results||!results.length) return;
   document.getElementById('overviewCard').style.display='flex';
   var total=results.length, allPass=0, most=0, few=0;
+  var profOk=0, profFail=0;
   results.forEach(function(r){
     var d=r.diagnose||{};
     if(d.error){few++;return;}
     if(d.passed) allPass++;
     else if((d.passed_count||0)>=7) most++;
     else few++;
+    if(r.prof_pass===true) profOk++;
+    else if(r.prof_pass===false) profFail++;
   });
   document.getElementById('overviewArea').innerHTML=
     '<div class="summary-item"><span class="summary-num">'+total+'</span><span class="summary-label">診斷總數</span></div>'+
     '<div class="summary-item"><span class="summary-num green">'+allPass+'</span><span class="summary-label">全數通過 (9/9)</span></div>'+
     '<div class="summary-item"><span class="summary-num orange">'+most+'</span><span class="summary-label">接近通過 (7-8)</span></div>'+
-    '<div class="summary-item"><span class="summary-num" style="color:var(--red);">'+few+'</span><span class="summary-label">未達標 (&lt;7)</span></div>';
+    '<div class="summary-item"><span class="summary-num" style="color:var(--red);">'+few+'</span><span class="summary-label">未達標 (&lt;7)</span></div>'+
+    '<div style="width:1px;height:36px;background:var(--border);margin:0 4px;"></div>'+
+    '<div class="summary-item"><span class="summary-num green">'+profOk+'</span><span class="summary-label">基本面通過</span></div>'+
+    '<div class="summary-item"><span class="summary-num" style="color:var(--red);">'+profFail+'</span><span class="summary-label">基本面濾除</span></div>';
 }
 
 var COLS=[
   {key:'stock_id',    label:'代號'},
-  {key:'name',        label:'名稱'},
-  {key:'close',       label:'收盤'},
-  {key:'passed_count',label:'通過'},
-  {key:'adx',         label:'ADX(8)'},
-  {key:'rsi14',       label:'RSI(14)'},
-  {key:'ma_align',    label:'均線排列'},
-  {key:'vol_ok',      label:'量能'},
+  {key:'name',        label:'名稱',      align:'left'},
+  {key:'h_diag',      label:'',          align:'center'},
+  {key:'close',       label:'即時價',     align:'right'},
+  {key:'passed_count',label:'通過',       align:'right'},
+  {key:'verdict',     label:'綜合判定',   align:'center'},
+  {key:'prof_pass',   label:'基本面',     align:'center'},
+  {key:'foreign_net', label:'外資',       align:'right'},
+  {key:'trust_net',   label:'投信',       align:'right'},
+  {key:'rev_yoy',     label:'營收年增',   align:'right'},
 ];
 
 function sortBy(col){
   if(_sortCol===col){_sortAsc=!_sortAsc;}else{_sortCol=col;_sortAsc=(col==='stock_id'||col==='name');}
-  var sorted=_allResults.slice().sort(function(a,b){
+  _allResults.sort(function(a,b){
     var da=a.diagnose||{}, db=b.diagnose||{};
-    var sma=da.summary||{}, smb=db.summary||{};
     var av,bv;
     if(col==='passed_count'){av=da.passed_count||0;bv=db.passed_count||0;}
-    else if(col==='adx'){av=sma.adx;bv=smb.adx;}
-    else if(col==='rsi14'){av=sma.rsi14;bv=smb.rsi14;}
-    else if(col==='ma_align'){av=da.passed_count||0;bv=db.passed_count||0;}
-    else if(col==='vol_ok'){av=sma.volume||0;bv=smb.volume||0;}
+    else if(col==='verdict'){var va=da.passed&&a.prof_pass===true;var vb=db.passed&&b.prof_pass===true;av=va?1:0;bv=vb?1:0;}
+    else if(col==='prof_pass'){av=a.prof_pass===true?1:a.prof_pass===false?0:-1;bv=b.prof_pass===true?1:b.prof_pass===false?0:-1;}
+    else if(col==='foreign_net'||col==='trust_net'||col==='rev_yoy'){av=a[col];bv=b[col];}
     else{av=a[col];bv=b[col];}
     if(av==null)return 1;if(bv==null)return -1;
     if(typeof av==='string')return _sortAsc?av.localeCompare(bv):bv.localeCompare(av);
     return _sortAsc?av-bv:bv-av;
   });
-  renderTable(sorted);
+  renderTable(_allResults);
+}
+
+function openDetail(idx){
+  var r=_allResults[idx];
+  if(!r) return;
+  var modal=document.getElementById('hDiagModal');
+  var content=document.getElementById('hDiagContent');
+  content.innerHTML=renderDetail(r);
+  modal.classList.add('active');
+  document.body.style.overflow='hidden';
+}
+
+function closeHDiagModal(evt){
+  if(!evt||evt.target.classList.contains('modal-overlay')){
+    document.getElementById('hDiagModal').classList.remove('active');
+    document.body.style.overflow='';
+  }
+}
+
+document.addEventListener('keydown',function(e){
+  if(e.key==='Escape') closeHDiagModal();
+});
+
+function renderDetail(r){
+  var d=r.diagnose||{};
+  var sm=d.summary||{};
+  var pc=d.passed_count||0;
+  var tc=d.total_checks||9;
+  var allPass=d.passed;
+
+  // 標題
+  var html='<div class="modal-title">';
+  html+='<span>'+r.stock_id+' '+r.name+'</span>';
+  if(allPass){
+    html+='<span style="background:rgba(52,211,153,.2);color:#34d399;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">ALL PASS</span>';
+  }else{
+    html+='<span style="background:rgba(248,81,73,.15);color:#f85149;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">'+pc+' / '+tc+' 通過</span>';
+  }
+  html+='</div>';
+
+  // 摘要 tags
+  html+='<div class="summary-tags">';
+  var tags=[
+    {l:'收盤',v:sm.close},
+    {l:'ADX',v:sm.adx},
+    {l:'RSI',v:sm.rsi14!=null?Math.round(sm.rsi14):null},
+    {l:'MA5',v:sm.ma5!=null?sm.ma5.toFixed(1):null},
+    {l:'MA60',v:sm.ma60!=null?sm.ma60.toFixed(2):null}
+  ];
+  tags.forEach(function(t){
+    html+='<span class="summary-tag">'+t.l+' <b>'+(t.v!=null?t.v:'-')+'</b></span>';
+  });
+  html+='</div>';
+
+  // 基本面篩選
+  if(r.prof_pass!==null&&r.prof_pass!==undefined){
+    var profPass=r.prof_pass;
+    var profCls=profPass?'check-card-pass':'check-card-fail';
+    var profIcon=profPass?'\\u2705':'\\u274C';
+    var profLabel=profPass?(r.prof_reason||'通過'):(r.prof_reason||'未通過');
+    html+='<div style="margin:12px 0 4px;font-size:13px;font-weight:700;color:var(--text);">📊 選股基本面篩選</div>';
+    html+='<div class="check-card '+profCls+'" style="margin-bottom:14px;">';
+    html+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">';
+    html+='<span style="font-size:16px;">'+profIcon+'</span>';
+    html+='<span style="font-weight:700;font-size:14px;">基本面濾網</span>';
+    html+='<span class="check-card-detail">'+(profPass?'通過選股篩選':'被選股篩選濾除')+'</span>';
+    html+='</div>';
+    html+='<div style="display:flex;flex-direction:column;gap:4px;font-size:13px;padding-left:24px;">';
+    html+='<div>判定：<b>'+profLabel+'</b></div>';
+    if(r.latest_eps!=null) html+='<div>最新 EPS：<b>'+r.latest_eps.toFixed(2)+'</b>'+(r.eps_quarter?' <span style="color:var(--text2);font-size:11px;">('+r.eps_quarter+')</span>':'')+'</div>';
+    if(r.rev_yoy!=null) html+='<div>營收年增：<b>'+(r.rev_yoy>=0?'+':'')+r.rev_yoy.toFixed(1)+'%</b></div>';
+    if(!profPass&&r.prof_reason) html+='<div>濾除原因：<b style="color:var(--red);">'+r.prof_reason+'</b></div>';
+    html+='</div>';
+    html+='</div>';
+  }
+
+  // 9 項檢查卡片
+  html+='<div style="margin:4px 0;font-size:13px;font-weight:700;color:var(--text);">🔍 H策略 9 項進場條件</div>';
+  html+='<div class="check-cards">';
+  (d.checks||[]).forEach(function(c,idx){
+    var cls=c.passed?'check-card-pass':'check-card-fail';
+    var icon=c.passed?'\\u2705':'\\u274C';
+
+    html+='<div class="check-card '+cls+'">';
+    html+='<div class="check-card-head">';
+    html+='<div class="check-card-left">';
+    html+='<span class="check-card-icon">'+icon+'</span>';
+    html+='<span class="check-card-name">'+(idx+1)+'. '+c.name+'</span>';
+    html+='</div>';
+    html+='<span class="check-card-detail">'+c.detail+'</span>';
+    html+='</div>';
+    html+='<div class="check-card-body">';
+    html+='<span>實際值：<b>'+c.value+'</b></span>';
+    html+='<span>門檻：'+c.threshold+'</span>';
+    html+='</div>';
+    html+='</div>';
+  });
+  html+='</div>';
+
+  return html;
 }
 
 function renderTable(rows){
@@ -2010,15 +2156,16 @@ function renderTable(rows){
 
   var header=COLS.map(function(c){
     var arrow='<span class="sort-arrow'+(_sortCol===c.key?(' '+(_sortAsc?'asc':'desc')):'')+'"></span>';
-    return '<th onclick="sortBy(\\''+c.key+'\\')">'+c.label+arrow+'</th>';
+    var cls=c.align==='right'?' class="th-r"':c.align==='center'?' class="th-c"':'';
+    return '<th'+cls+' onclick="sortBy(\\''+c.key+'\\')">'+c.label+arrow+'</th>';
   }).join('');
 
-  var body=rows.map(function(r){
+  var body=rows.map(function(r,idx){
     var d=r.diagnose||{};
     var sm=d.summary||{};
 
     if(d.error){
-      return '<tr><td class="td-code">'+r.stock_id+'</td><td>'+r.name+'</td><td colspan="6"><span class="badge badge-red">'+d.error+'</span></td></tr>';
+      return '<tr><td class="td-code">'+r.stock_id+'</td><td>'+r.name+'</td><td colspan="8"><span class="badge badge-red">'+d.error+'</span></td></tr>';
     }
 
     var pc=d.passed_count||0;
@@ -2026,53 +2173,79 @@ function renderTable(rows){
     var scoreCls=pc===tc?'score-all':(pc>=7?'score-most':'score-few');
     var scoreLabel=pc===tc?'\\u2705 '+pc+'/'+tc:pc+'/'+tc;
 
-    // ADX cell
-    var adxVal=sm.adx!=null?sm.adx.toFixed(1):'-';
-    var diVal=sm.plus_di!=null&&sm.minus_di!=null?'(+'+sm.plus_di.toFixed(0)+' / -'+sm.minus_di.toFixed(0)+')':'';
-    // RSI cell
-    var rsiVal=sm.rsi14!=null?sm.rsi14.toFixed(1):'-';
-    // MA alignment
-    var maChecks=(d.checks||[]).filter(function(c){return c.name.indexOf('四線')>=0||c.name.indexOf('斜率')>=0;});
-    var maOk=maChecks.every(function(c){return c.passed;});
-    var maBadge=maOk?'<span class="badge badge-green">\\u2713 多排</span>':'<span class="badge badge-red">\\u2717 未排</span>';
-    // Volume
-    var volCheck=(d.checks||[]).find(function(c){return c.name.indexOf('量')>=0;});
-    var volBadge=volCheck?(volCheck.passed?'<span class="badge badge-green">\\u2713 放量</span>':'<span class="badge badge-gray">\\u2717 量不足</span>'):'<span class="badge badge-gray">-</span>';
+    // 即時價 + 時間分兩行
+    var priceHtml=r.close!=null?r.close.toFixed(2):'-';
+    if(r.rt_time) priceHtml+='<br><span style="font-size:10px;color:var(--text2);">'+r.rt_time+'</span>';
 
-    var rtTag=r.rt_time?'<span style="font-size:10px;color:var(--text2);margin-left:4px;">'+r.rt_time+'</span>':'';
-
-    var row1='<tr>'+
-      '<td class="td-code"><a href="/?q='+r.stock_id+'" target="_blank">'+r.stock_id+'</a></td>'+
-      '<td>'+r.name+'</td>'+
-      '<td class="td-num">'+(r.close!=null?r.close.toFixed(2):'-')+rtTag+'</td>'+
-      '<td class="td-num"><span class="'+scoreCls+'">'+scoreLabel+'</span></td>'+
-      '<td class="td-num">'+adxVal+' <span style="font-size:10px;color:var(--text2)">'+diVal+'</span></td>'+
-      '<td class="td-num">'+rsiVal+'</td>'+
-      '<td>'+maBadge+'</td>'+
-      '<td>'+volBadge+'</td>'+
-    '</tr>';
-
-    // Row 2: failing checks as badges
-    var failChecks=(d.checks||[]).filter(function(c){return !c.passed;});
-    var row2='';
-    if(failChecks.length>0&&failChecks.length<9){
-      var badges=failChecks.map(function(c){
-        return '<span class="badge badge-red" style="font-size:10px;">\\u2717 '+c.name+' '+c.value+' (需'+c.threshold+')</span>';
-      }).join(' ');
-      row2='<tr><td colspan="2" style="border-top:none;padding:0;"></td>'+
-        '<td colspan="6" style="border-top:none;padding-top:0;padding-bottom:10px;">'+
-        '<div style="display:flex;gap:4px;flex-wrap:wrap;">'+badges+'</div></td></tr>';
+    // 外資
+    var fNet=r.foreign_net;
+    var fDisp=fNet!=null?(fNet>=0?'+':'')+fNet.toLocaleString()+'張':'-';
+    var fCls=fNet!=null?(fNet>0?'badge-green':fNet<0?'badge-red':'badge-gray'):'';
+    var fHtml=fNet!=null?'<span class="badge '+fCls+'">'+fDisp+'</span>':'<span style="color:var(--text2)">-</span>';
+    // 投信
+    var tNet=r.trust_net;
+    var tDisp=tNet!=null?(tNet>=0?'+':'')+tNet.toLocaleString()+'張':'-';
+    var tCls=tNet!=null?(tNet>0?'badge-green':tNet<0?'badge-red':'badge-gray'):'';
+    var tHtml=tNet!=null?'<span class="badge '+tCls+'">'+tDisp+'</span>':'<span style="color:var(--text2)">-</span>';
+    // 營收
+    var rev=r.rev_yoy;
+    var revDisp=rev!=null?(rev>=0?'+':'')+rev.toFixed(1)+'%':'-';
+    var revCls=rev!=null?(rev>0?'badge-green':rev<0?'badge-red':'badge-gray'):'';
+    var revHtml=rev!=null?'<span class="badge '+revCls+'">'+revDisp+'</span>':'<span style="color:var(--text2)">-</span>';
+    // 基本面
+    var profHtml='<span style="color:var(--text2)">-</span>';
+    if(r.prof_pass===true){
+      var pLabel=r.prof_reason==='轉機潛力股'?'✓ 轉機':'✓ 獲利';
+      var pCls=r.prof_reason==='轉機潛力股'?'badge-blue':'badge-green';
+      profHtml='<span class="badge '+pCls+'">'+pLabel+'</span>';
+    }else if(r.prof_pass===false){
+      profHtml='<span class="badge badge-red" title="'+(r.prof_reason||'未通過')+'">✗ 濾除</span>';
     }
 
-    return row1+row2;
+    // 綜合判定：H策略 9/9 + 基本面通過
+    var verdictHtml;
+    var hPass=d.passed;
+    var pPass=r.prof_pass===true;
+    if(hPass&&pPass){
+      verdictHtml='<span class="badge badge-green" style="font-weight:700;">✓ 可選</span>';
+    }else if(!hPass&&!pPass){
+      verdictHtml='<span class="badge badge-red">✗ 雙未達</span>';
+    }else if(!hPass){
+      verdictHtml='<span class="badge badge-orange">✗ 技術未達</span>';
+    }else{
+      verdictHtml='<span class="badge badge-orange">✗ 基本面</span>';
+    }
+
+    var row='<tr>'+
+      '<td class="td-code"><a href="/?q='+r.stock_id+'" target="_blank">'+r.stock_id+'</a></td>'+
+      '<td style="white-space:nowrap;">'+r.name+'</td>'+
+      '<td><a class="badge strat-h report-link" style="text-decoration:none;cursor:pointer;" onclick="openDetail('+idx+')">🔍 H 診斷</a></td>'+
+      '<td class="td-num">'+priceHtml+'</td>'+
+      '<td class="td-num"><span class="'+scoreCls+'">'+scoreLabel+'</span></td>'+
+      '<td style="text-align:center;">'+verdictHtml+'</td>'+
+      '<td style="text-align:center;">'+profHtml+'</td>'+
+      '<td class="td-num">'+fHtml+'</td>'+
+      '<td class="td-num">'+tHtml+'</td>'+
+      '<td class="td-num">'+revHtml+'</td>'+
+    '</tr>';
+
+    return row;
   }).join('');
 
   wrap.innerHTML='<div class="result-card">'+
-    '<div class="result-summary">診斷結果：<strong>'+rows.length+'</strong> 檔（點欄位標題排序）</div>'+
+    '<div class="result-summary">診斷結果：<strong>'+rows.length+'</strong> 檔（點擊標頭排序）</div>'+
     '<div style="overflow-x:auto"><table><thead><tr>'+header+'</tr></thead><tbody>'+body+'</tbody></table></div>'+
   '</div>';
 }
 </script>
+
+<div class="modal-overlay" id="hDiagModal" onclick="closeHDiagModal(event)">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeHDiagModal()">&times;</button>
+    <div id="hDiagContent"></div>
+  </div>
+</div>
+
 </body>
 </html>
 """
@@ -2264,11 +2437,6 @@ __NAV__
     <div class="ctrl-row" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
       <button class="btn btn-blue" id="runBtn" onclick="runScreener()">開始掃描全市場</button>
       <button class="btn" id="intradayBtn" onclick="runIntradayScan()" style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;border:none;font-weight:700;">📡 盤中即時掃描 H</button>
-      <span style="border-left:1px solid var(--border);height:24px;margin:0 4px;"></span>
-      <input type="text" id="diagnoseInput" placeholder="股票代號" maxlength="6"
-             style="width:80px;padding:6px 10px;border-radius:8px;border:1px solid var(--border);background:var(--bg2);color:var(--text);font-size:13px;font-family:inherit;"
-             onkeydown="if(event.key==='Enter')runDiagnoseH()">
-      <button class="btn" onclick="runDiagnoseH()" style="background:linear-gradient(135deg,#8b5cf6,#7c3aed);color:#fff;border:none;font-weight:700;">🔍 H 診斷</button>
       <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:13px;color:var(--text2);">
         <input type="checkbox" id="forceRefresh">
         <span>🔄 強制重抓資料</span>
@@ -2473,7 +2641,6 @@ function renderTable(rows){
     var indEsc=ind.replace(/'/g,"\\'");
     var nameEsc=r.name.replace(/'/g,"\\'");
     extras.push('<a href="#" class="badge badge-blue report-link" onclick="openReport(\\''+r.stock_id+'\\',\\''+nameEsc+'\\',\\''+indEsc+'\\',event)">📊 產業報告</a>');
-    extras.push('<a href="#" class="badge strat-h report-link" onclick="runDiagnoseH(\\''+r.stock_id+'\\',event)">🔍 H 診斷</a>');
     var revYoy=r.rev_yoy!=null?(r.rev_yoy>=0?'+':'')+r.rev_yoy.toFixed(1)+'%':null;
     var revClass=r.rev_yoy!=null?(r.rev_yoy>0?'badge-green':r.rev_yoy<0?'badge-red':'badge-gray'):'';
     if(revYoy)extras.push('<span class="badge '+revClass+'">營收 '+revYoy+'</span>');
@@ -2565,111 +2732,6 @@ function pollIntraday(){
     }
   });
 }
-
-// ── H 策略逐條診斷 ──────────────────────────────────────────
-
-function runDiagnoseH(stockId, evt){
-  if(evt){evt.preventDefault();evt.stopPropagation();}
-  var sid=stockId||document.getElementById('diagnoseInput').value.trim();
-  if(!sid){alert('請輸入股票代號');return;}
-
-  var modal=document.getElementById('diagnoseModal');
-  var content=document.getElementById('diagnoseContent');
-  modal.classList.add('active');
-  document.body.style.overflow='hidden';
-
-  content.innerHTML='<div class="modal-loading"><div class="spinner"></div><br>正在診斷 <b>'+sid+'</b> H 策略條件...</div>';
-
-  fetch('/api/screener/diagnose-h',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({stock_id:sid})
-  })
-  .then(function(r){return r.json();})
-  .then(function(d){
-    if(d.error){
-      content.innerHTML='<div class="modal-loading" style="color:var(--red);">'+d.error+'</div>';
-      return;
-    }
-    _renderDiagnose(d);
-  })
-  .catch(function(e){
-    content.innerHTML='<div class="modal-loading" style="color:var(--red);">診斷失敗：'+e+'</div>';
-  });
-}
-
-function _renderDiagnose(d){
-  var content=document.getElementById('diagnoseContent');
-  var allPassed=d.passed;
-  var cnt=d.passed_count;
-  var total=d.total_checks;
-  var s=d.summary||{};
-
-  var html='<div class="modal-title" style="display:flex;align-items:center;gap:10px;">';
-  html+='<span>'+d.stock_id+' '+(d.name||'')+'</span>';
-  if(allPassed){
-    html+='<span style="background:rgba(52,211,153,.2);color:#34d399;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">ALL PASS</span>';
-  }else{
-    html+='<span style="background:rgba(248,81,73,.15);color:#f85149;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">'+cnt+' / '+total+' 通過</span>';
-  }
-  html+='</div>';
-
-  // 摘要
-  html+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px;">';
-  var tags=[
-    {l:'收盤',v:s.close},
-    {l:'ADX',v:s.adx},
-    {l:'RSI',v:s.rsi14},
-    {l:'MA5',v:s.ma5},
-    {l:'MA60',v:s.ma60}
-  ];
-  tags.forEach(function(t){
-    html+='<span style="background:var(--bg3);padding:4px 10px;border-radius:6px;font-size:12px;">'+t.l+' <b>'+t.v+'</b></span>';
-  });
-  html+='</div>';
-
-  // 逐條
-  html+='<div style="display:flex;flex-direction:column;gap:8px;">';
-  var checks=d.checks||[];
-  for(var i=0;i<checks.length;i++){
-    var c=checks[i];
-    var bg=c.passed?'rgba(52,211,153,.08)':'rgba(248,81,73,.08)';
-    var border=c.passed?'rgba(52,211,153,.3)':'rgba(248,81,73,.3)';
-    var icon=c.passed?'✅':'❌';
-
-    html+='<div style="background:'+bg+';border:1px solid '+border+';border-radius:10px;padding:12px 16px;">';
-    html+='<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">';
-    html+='<div style="display:flex;align-items:center;gap:8px;">';
-    html+='<span style="font-size:16px;">'+icon+'</span>';
-    html+='<span style="font-weight:700;font-size:14px;color:var(--text);">'+(i+1)+'. '+c.name+'</span>';
-    html+='</div>';
-    html+='<span style="font-size:12px;color:var(--text2);background:var(--bg2);padding:2px 8px;border-radius:4px;">'+c.detail+'</span>';
-    html+='</div>';
-    html+='<div style="margin-top:6px;font-size:12px;color:var(--text2);display:flex;justify-content:space-between;">';
-    html+='<span>實際值：<b style="color:var(--text);">'+c.value+'</b></span>';
-    html+='<span>門檻：'+c.threshold+'</span>';
-    html+='</div>';
-    html+='</div>';
-  }
-  html+='</div>';
-
-  content.innerHTML=html;
-}
-
-function closeDiagnoseModal(evt){
-  if(!evt||evt.target.classList.contains('modal-overlay')){
-    document.getElementById('diagnoseModal').classList.remove('active');
-    document.body.style.overflow='';
-  }
-}
-
-// ESC 也能關閉診斷 Modal
-(function(){
-  var _origKeydown=document.onkeydown;
-  document.addEventListener('keydown',function(e){
-    if(e.key==='Escape'){closeDiagnoseModal();}
-  });
-})();
 
 // ── 盤中量能檢查 ──────────────────────────────────────────
 var monitorPollTimer=null;
@@ -2810,14 +2872,6 @@ document.addEventListener('keydown',function(e){
   </div>
 </div>
 
-<div class="modal-overlay" id="diagnoseModal" onclick="closeDiagnoseModal(event)">
-  <div class="modal-box" style="max-width:620px;" onclick="event.stopPropagation()">
-    <button class="modal-close" onclick="closeDiagnoseModal()">&times;</button>
-    <div id="diagnoseContent">
-      <div class="modal-loading"><div class="spinner"></div><br>載入中...</div>
-    </div>
-  </div>
-</div>
 </body>
 </html>"""
 
@@ -3050,45 +3104,6 @@ def api_intraday_status():
         "error":    _intraday_status["error"],
         "rows":     _intraday_status["rows"],
     })
-
-
-# ── H 策略逐條診斷 ──
-
-@app.route("/api/screener/diagnose-h", methods=["POST"])
-def api_diagnose_h():
-    """H 策略逐條診斷 — 輸入股票代號，回傳每個條件的通過/失敗。"""
-    from data_fetcher import fetch_stock_price_public
-    from screener import compute_screener_indicators
-    from strategies.master_chu import diagnose_h_strategy
-
-    data = request.get_json() or {}
-    stock_id = data.get("stock_id", "").strip()
-
-    if not stock_id:
-        return jsonify({"error": "請輸入股票代號"}), 400
-
-    try:
-        # 嘗試 twse，失敗再試 tpex
-        df = fetch_stock_price_public(stock_id, exchange="twse", months=6)
-        if df.empty:
-            df = fetch_stock_price_public(stock_id, exchange="tpex", months=6)
-        if df.empty:
-            return jsonify({"error": f"無法取得 {stock_id} 的歷史資料"}), 404
-
-        enriched = compute_screener_indicators(df)
-        result = diagnose_h_strategy(enriched)
-        result["stock_id"] = stock_id
-
-        # 嘗試取得股票名稱
-        if "name" in df.columns:
-            result["name"] = str(df.iloc[-1]["name"])
-        else:
-            result["name"] = stock_id
-
-        return jsonify(result)
-
-    except Exception as e:
-        return jsonify({"error": f"診斷失敗：{e}"}), 500
 
 
 # ═══════════════════════════════════════════════════════════
@@ -3476,9 +3491,12 @@ def _run_h_diagnose_bg(stock_ids):
         _h_diagnose_status["result"] = None
 
         from screener import compute_screener_indicators
-        from data_fetcher import fetch_price, fetch_realtime_quote
+        from data_fetcher import fetch_price, fetch_realtime_quote, fetch_institutional_single, fetch_revenue, _fetch
+        from fundamentals import get_revenue_summary
+        from strategies._helpers import check_profitability
         from strategies.master_chu import diagnose_h_strategy
         from datetime import date as _date
+        import time as _time
 
         today_str = _date.today().strftime("%Y-%m-%d")
         results = []
@@ -3550,9 +3568,60 @@ def _run_h_diagnose_bg(stock_ids):
                     "stock_id": sid, "name": name,
                     "close": close_val,
                     "diagnose": diag,
+                    "foreign_net": None, "trust_net": None, "rev_yoy": None,
+                    "prof_pass": None, "prof_reason": "", "latest_eps": None, "eps_quarter": "",
                 }
                 if rt_time:
                     item["rt_time"] = rt_time
+
+                # 法人買賣超
+                try:
+                    inst_df = fetch_institutional_single(sid, days=1)
+                    if not inst_df.empty:
+                        latest = inst_df.iloc[-1]
+                        fb = int(latest.get("Foreign_Investor_Buy", 0))
+                        fs = int(latest.get("Foreign_Investor_Sell", 0))
+                        tb = int(latest.get("Investment_Trust_Buy", 0))
+                        ts = int(latest.get("Investment_Trust_Sell", 0))
+                        item["foreign_net"] = (fb - fs) // 1000  # 張
+                        item["trust_net"] = (tb - ts) // 1000
+                except Exception:
+                    pass
+
+                # 營收年增率
+                try:
+                    rev_df = fetch_revenue(sid)
+                    rev_summary = get_revenue_summary(rev_df)
+                    item["rev_yoy"] = rev_summary.get("年增率(%)")
+                except Exception:
+                    pass
+
+                # 基本面篩選（選股用的獲利門檻）
+                try:
+                    prof_pass, prof_reason = check_profitability(sid)
+                    item["prof_pass"] = prof_pass
+                    item["prof_reason"] = prof_reason or ""
+                except Exception:
+                    item["prof_pass"] = None
+                    item["prof_reason"] = ""
+
+                # 取 EPS 供前端顯示
+                try:
+                    start_eps = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
+                    df_fin = _fetch("TaiwanStockFinancialStatements", sid, start_date=start_eps)
+                    if not df_fin.empty and "type" in df_fin.columns:
+                        eps_rows = df_fin[df_fin["type"] == "EPS"].copy()
+                        if not eps_rows.empty:
+                            eps_rows["date"] = pd.to_datetime(eps_rows["date"])
+                            eps_rows = eps_rows.sort_values("date")
+                            item["latest_eps"] = float(eps_rows.iloc[-1]["value"])
+                            _eps_date = eps_rows.iloc[-1]["date"]
+                            _q = (_eps_date.month - 1) // 3 + 1
+                            item["eps_quarter"] = f"{_eps_date.year}Q{_q}"
+                except Exception:
+                    pass
+
+                _time.sleep(0.1)
                 results.append(item)
 
             except Exception as e:
