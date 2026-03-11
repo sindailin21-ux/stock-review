@@ -1825,41 +1825,30 @@ __NAV_STYLE__
 .badge-green{background:rgba(63,185,80,.15);color:var(--green);}
 .badge-red{background:rgba(248,81,73,.15);color:var(--red);}
 .badge-orange{background:rgba(255,166,87,.15);color:var(--orange);}
+.badge-gray{background:var(--bg3);color:var(--text2);}
 .summary-card{display:flex;gap:16px;flex-wrap:wrap;align-items:center;}
 .summary-item{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:60px;}
 .summary-num{font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;}
 .summary-label{font-size:11px;color:var(--text2);}
 .summary-num.green{color:var(--green);}
 .summary-num.orange{color:var(--orange);}
+.result-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;}
+.result-summary{font-size:13px;color:var(--text2);margin-bottom:12px;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+thead th{text-align:left;color:var(--text2);font-size:11px;padding:6px 8px;border-bottom:1px solid var(--border);white-space:nowrap;cursor:pointer;user-select:none;}
+thead th:hover{color:var(--text);}
+tbody td{padding:8px;border-bottom:1px solid var(--border);vertical-align:top;}
+.td-num{text-align:right;font-family:'JetBrains Mono',monospace;font-size:12px;}
+.td-code a{color:var(--blue);text-decoration:none;font-weight:600;font-family:'JetBrains Mono',monospace;font-size:12px;}
+.td-code a:hover{text-decoration:underline;}
+.score-all{color:var(--green);font-weight:700;}
+.score-most{color:var(--orange);font-weight:700;}
+.score-few{color:var(--red);font-weight:700;}
+.sort-arrow{display:inline-block;width:12px;font-size:9px;color:var(--text2);}
+.sort-arrow.asc::after{content:'\\25B2';}
+.sort-arrow.desc::after{content:'\\25BC';}
 .spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto;}
 @keyframes spin{to{transform:rotate(360deg);}}
-/* H Diagnose specific */
-.stock-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px;}
-.stock-header{display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;}
-.stock-title{font-size:16px;font-weight:700;}
-.score-badge{font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;}
-.score-badge.all-pass{color:var(--green);}
-.score-badge.most-pass{color:var(--orange);}
-.score-badge.few-pass{color:var(--red);}
-.summary-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-bottom:12px;}
-.summary-cell{font-size:12px;display:flex;justify-content:space-between;padding:4px 8px;background:var(--bg3);border-radius:4px;}
-.summary-cell .label{color:var(--text2);}
-.summary-cell .value{font-family:'JetBrains Mono',monospace;font-weight:600;}
-.check-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);font-size:13px;}
-.check-row:last-child{border-bottom:none;}
-.check-icon{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
-.check-pass{background:rgba(63,185,80,.15);color:var(--green);}
-.check-fail{background:rgba(248,81,73,.15);color:var(--red);}
-.check-name{font-weight:600;min-width:140px;}
-.check-value{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text);}
-.check-threshold{font-size:11px;color:var(--text2);min-width:100px;}
-.check-detail{font-size:12px;color:var(--text2);margin-left:auto;}
-@media(max-width:768px){
-  .check-row{flex-wrap:wrap;gap:6px;}
-  .check-name{min-width:auto;}
-  .check-detail{margin-left:34px;width:100%;}
-  .summary-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));}
-}
 </style>
 </head>
 <body>
@@ -1905,6 +1894,9 @@ function loadFromPortfolio(){
 }
 
 var diagPollTimer=null;
+var _allResults=[];
+var _sortCol='passed_count';
+var _sortAsc=false;
 
 function runDiagnose(){
   var raw=document.getElementById('stockInput').value.trim();
@@ -1957,8 +1949,9 @@ function pollDiagnose(){
       ?' <span style="color:#10b981;font-size:12px;">\\u2022 即時盤價</span>'
       :' <span style="color:var(--text2);font-size:12px;">\\u2022 收盤資料</span>';
     document.getElementById('statusNote').innerHTML='診斷完成 ('+d.date+')'+intraTag;
-    renderOverview(d.results);
-    renderStockCards(d.results);
+    _allResults=d.results||[];
+    renderOverview(_allResults);
+    sortBy('passed_count');
   })
   .catch(function(){});
 }
@@ -1981,84 +1974,103 @@ function renderOverview(results){
     '<div class="summary-item"><span class="summary-num" style="color:var(--red);">'+few+'</span><span class="summary-label">未達標 (&lt;7)</span></div>';
 }
 
-function fmtNum(v,dec){
-  if(v==null||v===undefined) return '-';
-  if(typeof v==='number') return dec!=null?v.toFixed(dec):v.toLocaleString();
-  return String(v);
+var COLS=[
+  {key:'stock_id',    label:'代號'},
+  {key:'name',        label:'名稱'},
+  {key:'close',       label:'收盤'},
+  {key:'passed_count',label:'通過'},
+  {key:'adx',         label:'ADX(8)'},
+  {key:'rsi14',       label:'RSI(14)'},
+  {key:'ma_align',    label:'均線排列'},
+  {key:'vol_ok',      label:'量能'},
+];
+
+function sortBy(col){
+  if(_sortCol===col){_sortAsc=!_sortAsc;}else{_sortCol=col;_sortAsc=(col==='stock_id'||col==='name');}
+  var sorted=_allResults.slice().sort(function(a,b){
+    var da=a.diagnose||{}, db=b.diagnose||{};
+    var sma=da.summary||{}, smb=db.summary||{};
+    var av,bv;
+    if(col==='passed_count'){av=da.passed_count||0;bv=db.passed_count||0;}
+    else if(col==='adx'){av=sma.adx;bv=smb.adx;}
+    else if(col==='rsi14'){av=sma.rsi14;bv=smb.rsi14;}
+    else if(col==='ma_align'){av=da.passed_count||0;bv=db.passed_count||0;}
+    else if(col==='vol_ok'){av=sma.volume||0;bv=smb.volume||0;}
+    else{av=a[col];bv=b[col];}
+    if(av==null)return 1;if(bv==null)return -1;
+    if(typeof av==='string')return _sortAsc?av.localeCompare(bv):bv.localeCompare(av);
+    return _sortAsc?av-bv:bv-av;
+  });
+  renderTable(sorted);
 }
 
-function renderStockCards(results){
-  results.sort(function(a,b){
-    var da=a.diagnose||{}, db=b.diagnose||{};
-    if(da.passed&&!db.passed) return -1;
-    if(!da.passed&&db.passed) return 1;
-    return (db.passed_count||0)-(da.passed_count||0);
-  });
+function renderTable(rows){
+  var wrap=document.getElementById('resultArea');
+  if(!rows.length){wrap.innerHTML='<div class="result-card"><div style="padding:16px;color:var(--text2);">無診斷結果</div></div>';return;}
 
-  var html='';
-  results.forEach(function(r){
+  var header=COLS.map(function(c){
+    var arrow='<span class="sort-arrow'+(_sortCol===c.key?(' '+(_sortAsc?'asc':'desc')):'')+'"></span>';
+    return '<th onclick="sortBy(\\''+c.key+'\\')">'+c.label+arrow+'</th>';
+  }).join('');
+
+  var body=rows.map(function(r){
     var d=r.diagnose||{};
+    var sm=d.summary||{};
 
     if(d.error){
-      html+='<div class="stock-card"><div class="stock-header">';
-      html+='<span class="stock-title">'+r.stock_id+' '+r.name+'</span>';
-      html+='<span class="badge badge-red">'+d.error+'</span>';
-      html+='</div></div>';
-      return;
+      return '<tr><td class="td-code">'+r.stock_id+'</td><td>'+r.name+'</td><td colspan="6"><span class="badge badge-red">'+d.error+'</span></td></tr>';
     }
 
     var pc=d.passed_count||0;
     var tc=d.total_checks||9;
-    var scoreCls=pc===tc?'all-pass':(pc>=7?'most-pass':'few-pass');
+    var scoreCls=pc===tc?'score-all':(pc>=7?'score-most':'score-few');
+    var scoreLabel=pc===tc?'\\u2705 '+pc+'/'+tc:pc+'/'+tc;
 
-    html+='<div class="stock-card">';
-    html+='<div class="stock-header">';
-    html+='<span class="stock-title">'+r.stock_id+' '+r.name+'</span>';
-    if(r.close!=null) html+='<span style="font-family:JetBrains Mono,monospace;font-size:14px;">$'+fmtNum(r.close,2)+'</span>';
-    if(r.rt_time) html+='<span style="font-size:11px;color:var(--text2);">'+r.rt_time+'</span>';
-    html+='<span class="score-badge '+scoreCls+'">'+pc+'/'+tc+'</span>';
-    html+='<span class="badge '+(d.passed?'badge-green':'badge-red')+'">'+(d.passed?'\\u2705 全數通過':'\\u274c 未全數通過')+'</span>';
-    html+='</div>';
+    // ADX cell
+    var adxVal=sm.adx!=null?sm.adx.toFixed(1):'-';
+    var diVal=sm.plus_di!=null&&sm.minus_di!=null?'(+'+sm.plus_di.toFixed(0)+' / -'+sm.minus_di.toFixed(0)+')':'';
+    // RSI cell
+    var rsiVal=sm.rsi14!=null?sm.rsi14.toFixed(1):'-';
+    // MA alignment
+    var maChecks=(d.checks||[]).filter(function(c){return c.name.indexOf('四線')>=0||c.name.indexOf('斜率')>=0;});
+    var maOk=maChecks.every(function(c){return c.passed;});
+    var maBadge=maOk?'<span class="badge badge-green">\\u2713 多排</span>':'<span class="badge badge-red">\\u2717 未排</span>';
+    // Volume
+    var volCheck=(d.checks||[]).find(function(c){return c.name.indexOf('量')>=0;});
+    var volBadge=volCheck?(volCheck.passed?'<span class="badge badge-green">\\u2713 放量</span>':'<span class="badge badge-gray">\\u2717 量不足</span>'):'<span class="badge badge-gray">-</span>';
 
-    // Summary grid
-    var sm=d.summary||{};
-    html+='<div class="summary-grid">';
-    var fields=[
-      ['close','收盤',2],['ma5','MA5',2],['ma10','MA10',2],['ma20','MA20',2],['ma60','MA60',2],
-      ['adx','ADX(8)',2],['plus_di','+DI',2],['minus_di','-DI',2],['rsi14','RSI(14)',2],
-      ['volume','成交量',0],['vol_ma5','VMA5',0]
-    ];
-    fields.forEach(function(f){
-      var v=sm[f[0]];
-      var disp=(v!=null)?fmtNum(v,f[2]):'-';
-      html+='<div class="summary-cell"><span class="label">'+f[1]+'</span><span class="value">'+disp+'</span></div>';
-    });
-    if(sm.slopes){
-      ['ma5','ma10','ma20','ma60'].forEach(function(k){
-        var sv=sm.slopes[k];
-        var disp=(sv!=null)?((sv>0?'+':'')+sv.toFixed(4)):'-';
-        html+='<div class="summary-cell"><span class="label">'+k.toUpperCase()+' 斜率</span><span class="value">'+disp+'</span></div>';
-      });
+    var rtTag=r.rt_time?'<span style="font-size:10px;color:var(--text2);margin-left:4px;">'+r.rt_time+'</span>':'';
+
+    var row1='<tr>'+
+      '<td class="td-code"><a href="/?q='+r.stock_id+'" target="_blank">'+r.stock_id+'</a></td>'+
+      '<td>'+r.name+'</td>'+
+      '<td class="td-num">'+(r.close!=null?r.close.toFixed(2):'-')+rtTag+'</td>'+
+      '<td class="td-num"><span class="'+scoreCls+'">'+scoreLabel+'</span></td>'+
+      '<td class="td-num">'+adxVal+' <span style="font-size:10px;color:var(--text2)">'+diVal+'</span></td>'+
+      '<td class="td-num">'+rsiVal+'</td>'+
+      '<td>'+maBadge+'</td>'+
+      '<td>'+volBadge+'</td>'+
+    '</tr>';
+
+    // Row 2: failing checks as badges
+    var failChecks=(d.checks||[]).filter(function(c){return !c.passed;});
+    var row2='';
+    if(failChecks.length>0&&failChecks.length<9){
+      var badges=failChecks.map(function(c){
+        return '<span class="badge badge-red" style="font-size:10px;">\\u2717 '+c.name+' '+c.value+' (需'+c.threshold+')</span>';
+      }).join(' ');
+      row2='<tr><td colspan="2" style="border-top:none;padding:0;"></td>'+
+        '<td colspan="6" style="border-top:none;padding-top:0;padding-bottom:10px;">'+
+        '<div style="display:flex;gap:4px;flex-wrap:wrap;">'+badges+'</div></td></tr>';
     }
-    html+='</div>';
 
-    // 9 checks
-    html+='<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;">';
-    (d.checks||[]).forEach(function(c,idx){
-      html+='<div class="check-row">';
-      html+='<div class="check-icon '+(c.passed?'check-pass':'check-fail')+'">'+(c.passed?'\\u2713':'\\u2717')+'</div>';
-      html+='<span class="check-name">'+(idx+1)+'. '+c.name+'</span>';
-      html+='<span class="check-value">'+c.value+'</span>';
-      html+='<span class="check-threshold">門檻: '+c.threshold+'</span>';
-      html+='<span class="check-detail">'+c.detail+'</span>';
-      html+='</div>';
-    });
-    html+='</div>';
+    return row1+row2;
+  }).join('');
 
-    html+='</div>';
-  });
-
-  document.getElementById('resultArea').innerHTML=html;
+  wrap.innerHTML='<div class="result-card">'+
+    '<div class="result-summary">診斷結果：<strong>'+rows.length+'</strong> 檔（點欄位標題排序）</div>'+
+    '<div style="overflow-x:auto"><table><thead><tr>'+header+'</tr></thead><tbody>'+body+'</tbody></table></div>'+
+  '</div>';
 }
 </script>
 </body>
