@@ -11,6 +11,15 @@ from config import FINMIND_TOKEN, DATA_DAYS
 
 BASE_URL = "https://api.finmindtrade.com/api/v4/data"
 
+# ── FinMind 402 熔斷 ──
+_finmind_quota_exhausted = False  # 一旦收到 402，全面停止 FinMind 請求
+
+
+def reset_finmind_quota():
+    """重置熔斷旗標，允許下次掃描重新嘗試 FinMind API。"""
+    global _finmind_quota_exhausted
+    _finmind_quota_exhausted = False
+
 
 def _get_start_date(days=DATA_DAYS):
     """取得資料起始日期"""
@@ -18,7 +27,11 @@ def _get_start_date(days=DATA_DAYS):
 
 
 def _fetch(dataset, stock_id, start_date=None, extra_params=None):
-    """通用 API 請求函式"""
+    """通用 API 請求函式（含 402 熔斷機制）"""
+    global _finmind_quota_exhausted
+    if _finmind_quota_exhausted:
+        return pd.DataFrame()
+
     params = {
         "dataset": dataset,
         "data_id": stock_id,
@@ -30,6 +43,10 @@ def _fetch(dataset, stock_id, start_date=None, extra_params=None):
 
     try:
         resp = requests.get(BASE_URL, params=params, timeout=15)
+        if resp.status_code == 402:
+            _finmind_quota_exhausted = True
+            print(f"  ⚠️ FinMind 免費額度已用完（402），本次掃描後續不再呼叫 FinMind API")
+            return pd.DataFrame()
         resp.raise_for_status()
         data = resp.json()
         if data.get("status") == 200 and data.get("data"):
@@ -405,8 +422,9 @@ def _batch_fetch_tpex_finmind(tpex_ids, target_date=None, months=5, status=None)
     用 FinMind 逐股查詢 TPEX 股票歷史行情，但每股只 1 次呼叫（涵蓋全部月份）。
     相比原本每股×每月各一次，API 呼叫量減少 80%（N 次 vs N×5 次）。
     """
+    global _finmind_quota_exhausted
     import time as _time
-    if not FINMIND_TOKEN:
+    if not FINMIND_TOKEN or _finmind_quota_exhausted:
         return {}
 
     if target_date:
@@ -437,6 +455,10 @@ def _batch_fetch_tpex_finmind(tpex_ids, target_date=None, months=5, status=None)
                 "token": FINMIND_TOKEN,
             }, timeout=30)
 
+            if fm_resp.status_code == 402:
+                _finmind_quota_exhausted = True
+                print(f"  ⚠️ FinMind 免費額度已用完（402），後續不再呼叫 FinMind API")
+                break
             if fm_resp.status_code == 200:
                 fm_data = fm_resp.json()
                 if fm_data.get("status") == 200 and fm_data.get("data"):
@@ -587,6 +609,7 @@ def fetch_institutional_batch(target_date=None, days=5, status=None):
     days_collected = 0
     current = end
     max_back = days * 3 + 10
+    tpex_blocked = False  # 一旦 403 就不再嘗試 TPEX
 
     while days_collected < days and (end - current).days < max_back:
         if current.weekday() >= 5:
@@ -636,38 +659,36 @@ def fetch_institutional_batch(target_date=None, days=5, status=None):
         # fields: 代號(0), 名稱(1), 外資買(2), 外資賣(3), 外資超(4),
         #         投信買(5), 投信賣(6), 投信超(7), ...
         tpex_inst_ok = False
-        try:
-            resp = requests.get(
-                "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php",
-                params={"l": "zh-tw", "d": date_tpex, "se": "EW", "t": "D"},
-                timeout=20, headers=_PUB_HEADERS,
-            )
-            if resp.status_code == 403:
-                raise requests.exceptions.HTTPError("403 Forbidden")
-            if resp.status_code == 200:
-                for table in resp.json().get("tables", []):
-                    for row in table.get("data", []):
-                        try:
-                            sid = row[0].strip()
-                            all_records.setdefault(sid, []).append({
-                                "date": date_str,
-                                "Foreign_Investor_Buy":  _safe_int(row[2]) or 0,
-                                "Foreign_Investor_Sell": _safe_int(row[3]) or 0,
-                                "Investment_Trust_Buy":  _safe_int(row[5]) or 0,
-                                "Investment_Trust_Sell": _safe_int(row[6]) or 0,
-                            })
-                            if not day_has_data:
-                                day_has_data = True
-                        except (IndexError, KeyError):
-                            continue
-                tpex_inst_ok = True
-        except Exception as e:
-            print(f"  [TPEX法人] {date_str}: {e}")
-
-        # ── TPEX 法人 fallback：跳過（免費 FinMind 不支援全市場查詢）──
-        if not tpex_inst_ok:
-            if days_collected == 0:
-                print(f"  [TPEX法人] {date_str}: 403 被封，TPEX 法人將在掃描時按需查詢")
+        if not tpex_blocked:
+            try:
+                resp = requests.get(
+                    "https://www.tpex.org.tw/web/stock/3insti/daily_trade/3itrade_hedge_result.php",
+                    params={"l": "zh-tw", "d": date_tpex, "se": "EW", "t": "D"},
+                    timeout=20, headers=_PUB_HEADERS,
+                )
+                if resp.status_code == 403:
+                    raise requests.exceptions.HTTPError("403 Forbidden")
+                if resp.status_code == 200:
+                    for table in resp.json().get("tables", []):
+                        for row in table.get("data", []):
+                            try:
+                                sid = row[0].strip()
+                                all_records.setdefault(sid, []).append({
+                                    "date": date_str,
+                                    "Foreign_Investor_Buy":  _safe_int(row[2]) or 0,
+                                    "Foreign_Investor_Sell": _safe_int(row[3]) or 0,
+                                    "Investment_Trust_Buy":  _safe_int(row[5]) or 0,
+                                    "Investment_Trust_Sell": _safe_int(row[6]) or 0,
+                                })
+                                if not day_has_data:
+                                    day_has_data = True
+                            except (IndexError, KeyError):
+                                continue
+                    tpex_inst_ok = True
+            except Exception as e:
+                print(f"  [TPEX法人] {date_str}: {e}")
+                tpex_blocked = True
+                print(f"  ⚠️ TPEX 法人 API 被封（403），後續不再嘗試，上櫃法人將在掃描時按需查詢（FinMind）")
 
         if day_has_data:
             days_collected += 1
@@ -693,7 +714,8 @@ def fetch_institutional_single(stock_id, days=5):
     用於 TPEX 法人全市場查詢被封時的按需 fallback。
     回傳 DataFrame(date, Foreign_Investor_Buy/Sell, Investment_Trust_Buy/Sell)。
     """
-    if not FINMIND_TOKEN:
+    global _finmind_quota_exhausted
+    if not FINMIND_TOKEN or _finmind_quota_exhausted:
         return pd.DataFrame()
 
     end = datetime.today()
@@ -708,6 +730,10 @@ def fetch_institutional_single(stock_id, days=5):
             "token": FINMIND_TOKEN,
         }, timeout=20)
 
+        if fm_resp.status_code == 402:
+            _finmind_quota_exhausted = True
+            print(f"  ⚠️ FinMind 免費額度已用完（402），後續不再呼叫 FinMind API")
+            return pd.DataFrame()
         if fm_resp.status_code != 200:
             return pd.DataFrame()
 
@@ -916,14 +942,174 @@ def fetch_margin(stock_id):
 
 # ── 基本面 ──────────────────────────────────────────────────
 
-def fetch_revenue(stock_id):
-    """抓取月營收資料（取 14 個月以便計算年增率）"""
-    start = (datetime.today() - timedelta(days=450)).strftime("%Y-%m-%d")
-    df = _fetch("TaiwanStockMonthRevenue", stock_id, start_date=start)
-    if df.empty:
-        return df
-    df["date"] = pd.to_datetime(df["date"])
+# ── MOPS 營收快取（全市場一次抓取，不受 FinMind 額度限制）──
+_mops_revenue_cache = {}   # {stock_id → {revenue, prev_revenue, yoy_revenue, mom_pct, yoy_pct, revenue_month, revenue_year}}
+_mops_cache_month = None   # 快取對應的 (year, month)
+
+
+def reset_mops_cache():
+    """重置 MOPS 營收快取（每次新掃描呼叫）"""
+    global _mops_revenue_cache, _mops_cache_month
+    _mops_revenue_cache = {}
+    _mops_cache_month = None
+
+
+def _fetch_mops_revenue_all():
+    """
+    從 MOPS（公開資訊觀測站）抓取最新月份全市場營收。
+    自動嘗試最近 3 個月（因為月營收通常次月 10 號後才公布）。
+    上市(sii) + 上櫃(otc)，國內(0) + 外國(1) = 每月 4 次 HTTP。
+    回傳 dict[stock_id → row_dict]。
+    """
+    from io import StringIO
+    import time as _time
+
+    today = datetime.today()
+    result = {}
+
+    # 嘗試最近 3 個月（最新月 → 前 2 月），找到有資料的即停
+    for offset in range(1, 4):
+        y = today.year
+        m = today.month - offset
+        while m <= 0:
+            m += 12
+            y -= 1
+        roc_year = y - 1911
+
+        month_result = {}
+        ok = False
+
+        for market in ("sii", "otc"):
+            for page in (0, 1):
+                url = f"https://emops.twse.com.tw/nas/t21/{market}/t21sc03_{roc_year}_{m}_{page}.html"
+                try:
+                    resp = requests.get(url, timeout=20, headers=_PUB_HEADERS)
+                    if resp.status_code != 200:
+                        continue
+                    resp.encoding = "big5"
+                    tables = pd.read_html(StringIO(resp.text))
+
+                    for t in tables:
+                        if t.shape[1] != 11 or t.shape[0] < 2:
+                            continue
+                        # 扁平化多層欄位名
+                        t.columns = [c[1] if isinstance(c, tuple) and "Unnamed" not in str(c[0]) else (c[1] if isinstance(c, tuple) else c) for c in t.columns]
+                        if "公司 代號" not in t.columns:
+                            continue
+
+                        for _, row in t.iterrows():
+                            sid = str(row["公司 代號"]).strip()
+                            # 只保留 4 碼數字（一般股票）
+                            if not sid.isdigit() or len(sid) != 4:
+                                continue
+                            try:
+                                rev = row.get("當月營收")
+                                prev_rev = row.get("上月營收")
+                                yoy_rev = row.get("去年當月營收")
+                                mom_pct = row.get("上月比較 增減(%)")
+                                yoy_pct = row.get("去年同月 增減(%)")
+
+                                # 清理數值（可能有逗號或非數字）
+                                def _clean_num(v):
+                                    if pd.isna(v) or str(v).strip() in ("-", "", "不適用"):
+                                        return None
+                                    return float(str(v).replace(",", ""))
+
+                                rev_val = _clean_num(rev)
+                                if rev_val is None:
+                                    continue
+
+                                month_result[sid] = {
+                                    "revenue": int(rev_val * 1000),       # 千元 → 元
+                                    "prev_revenue": int(_clean_num(prev_rev) * 1000) if _clean_num(prev_rev) else None,
+                                    "yoy_revenue": int(_clean_num(yoy_rev) * 1000) if _clean_num(yoy_rev) else None,
+                                    "mom_pct": _clean_num(mom_pct),
+                                    "yoy_pct": _clean_num(yoy_pct),
+                                    "revenue_month": m,
+                                    "revenue_year": y,
+                                }
+                                ok = True
+                            except Exception:
+                                continue
+                except Exception as e:
+                    print(f"  [MOPS] {market}/{page}: {e}")
+                _time.sleep(0.3)
+
+        if ok and len(month_result) > 100:
+            print(f"  ✅ MOPS 營收：{y}年{m}月，共 {len(month_result)} 檔")
+            result = month_result
+            break
+        else:
+            print(f"  [MOPS] {y}年{m}月 資料不足（{len(month_result)} 檔），嘗試前一個月...")
+
+    return result
+
+
+def _load_mops_cache():
+    """載入 MOPS 全市場營收到快取"""
+    global _mops_revenue_cache, _mops_cache_month
+    if _mops_revenue_cache:
+        return  # 已載入
+    print("  📡 從 MOPS 公開資訊觀測站抓取全市場月營收...")
+    _mops_revenue_cache = _fetch_mops_revenue_all()
+    if _mops_revenue_cache:
+        sample = next(iter(_mops_revenue_cache.values()))
+        _mops_cache_month = (sample["revenue_year"], sample["revenue_month"])
+
+
+def _mops_to_dataframe(stock_id):
+    """將 MOPS 快取中的單股資料轉為 FinMind 相容 DataFrame"""
+    if stock_id not in _mops_revenue_cache:
+        return pd.DataFrame()
+    d = _mops_revenue_cache[stock_id]
+    rows = []
+    # 當月
+    rows.append({
+        "date": pd.Timestamp(f"{d['revenue_year']}-{d['revenue_month']:02d}-01"),
+        "revenue": d["revenue"],
+        "revenue_month": d["revenue_month"],
+        "revenue_year": d["revenue_year"],
+    })
+    # 上月（計算月增率用）
+    if d.get("prev_revenue"):
+        pm = d["revenue_month"] - 1
+        py = d["revenue_year"]
+        if pm <= 0:
+            pm += 12
+            py -= 1
+        rows.append({
+            "date": pd.Timestamp(f"{py}-{pm:02d}-01"),
+            "revenue": d["prev_revenue"],
+            "revenue_month": pm,
+            "revenue_year": py,
+        })
+    # 去年同月（計算年增率用）
+    if d.get("yoy_revenue"):
+        rows.append({
+            "date": pd.Timestamp(f"{d['revenue_year'] - 1}-{d['revenue_month']:02d}-01"),
+            "revenue": d["yoy_revenue"],
+            "revenue_month": d["revenue_month"],
+            "revenue_year": d["revenue_year"] - 1,
+        })
+    df = pd.DataFrame(rows)
     df = df.sort_values("date").reset_index(drop=True)
+    return df
+
+
+def fetch_revenue(stock_id):
+    """抓取月營收資料（優先 FinMind，額度不足時自動切換 MOPS）"""
+    # 1. FinMind（如果額度正常）
+    if not _finmind_quota_exhausted:
+        start = (datetime.today() - timedelta(days=450)).strftime("%Y-%m-%d")
+        df = _fetch("TaiwanStockMonthRevenue", stock_id, start_date=start)
+        if not df.empty:
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date").reset_index(drop=True)
+            return df
+
+    # 2. MOPS fallback（第一次觸發會抓全市場，後續查快取）
+    _load_mops_cache()
+    df = _mops_to_dataframe(stock_id)
     return df
 
 

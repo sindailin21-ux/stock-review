@@ -153,14 +153,14 @@ def check_profitability(stock_id: str) -> tuple:
     try:
         df_fin = _fetch("TaiwanStockFinancialStatements", stock_id, start_date=start)
     except Exception:
-        return (True, "api_error_pass")
+        return (True, "無法取得財報（預設通過）")
 
     if df_fin.empty or "type" not in df_fin.columns:
-        return (True, "no_data_pass")
+        return (True, "無財報資料（預設通過）")
 
     eps_df = df_fin[df_fin["type"] == "EPS"].copy()
     if eps_df.empty:
-        return (True, "no_eps_data")
+        return (True, "無 EPS 資料（預設通過）")
 
     eps_df["date"] = pd.to_datetime(eps_df["date"])
     eps_df = eps_df.sort_values("date")
@@ -176,16 +176,17 @@ def check_profitability(stock_id: str) -> tuple:
 
     # ════ 條件 B：轉機門檻 — EPS ≤ 0 + 虧損收斂 + 營收 YoY > 40% ════
     if len(eps_df) < 2:
-        return (False, None)
+        return (False, "EPS≤0 且歷史資料不足")
 
     prev_eps = float(eps_df.iloc[-2]["value"])
 
     # B1. 虧損收斂：本季 EPS > 上季 EPS
     if latest_eps <= prev_eps:
-        return (False, None)
+        return (False, f"EPS≤0 且虧損未收斂（{prev_eps:.2f}→{latest_eps:.2f}）")
 
     # B2. 營收 YoY > 40%
     if rev_yoy is not None and rev_yoy > 40:
         return (True, "轉機潛力股")
 
-    return (False, None)
+    yoy_str = f"{rev_yoy:+.1f}%" if rev_yoy is not None else "無資料"
+    return (False, f"EPS 虧損收斂但營收YoY={yoy_str}未達40%")

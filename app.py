@@ -356,9 +356,13 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
 
     from data_fetcher import fetch_market_daily
     from data_fetcher import fetch_stock_prices_batch, fetch_institutional_batch, fetch_industry_map, fetch_institutional_single
-    from data_fetcher import fetch_revenue
+    from data_fetcher import fetch_revenue, reset_finmind_quota, reset_mops_cache
     from fundamentals import get_revenue_summary
     from screener import scan_stocks
+
+    # 重置 FinMind 熔斷旗標 + MOPS 快取（每次新掃描重新嘗試）
+    reset_finmind_quota()
+    reset_mops_cache()
 
     # ── 本地快取（同日不重抓 TWSE/TPEX）──
     cache_dir = os.path.join(os.path.dirname(__file__), ".cache")
@@ -546,6 +550,15 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
                 r["rev_yoy"] = rev_summary.get("年增率(%)")
             except Exception:
                 r["rev_yoy"] = None
+            # 基本面篩選
+            try:
+                from strategies._helpers import check_profitability
+                prof_pass, prof_reason = check_profitability(sid)
+                r["prof_pass"] = prof_pass
+                r["prof_reason"] = prof_reason or ""
+            except Exception:
+                r["prof_pass"] = None
+                r["prof_reason"] = ""
             _time.sleep(0.15)  # FinMind rate limit
 
         # ── Phase 6: Watchlist 追蹤（雙池系統 V2.0）──
@@ -2349,6 +2362,28 @@ tbody tr:hover{background:rgba(88,166,255,.05);}
 .modal-footer{text-align:right;font-size:11px;color:var(--text2);margin-top:16px;padding-top:12px;border-top:1px solid var(--border);}
 .report-link{cursor:pointer;text-decoration:none;}
 .report-link:hover{text-decoration:underline;filter:brightness(1.2);}
+.strat-h{background:rgba(245,158,11,.2);color:#f59e0b;}
+/* H診斷 modal 內的 check cards */
+.hdiag-check{border-radius:10px;padding:12px 14px;margin-bottom:8px;}
+.hdiag-pass{background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.3);}
+.hdiag-fail{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.3);}
+.hdiag-head{display:flex;justify-content:space-between;align-items:center;}
+.hdiag-body{display:flex;gap:16px;font-size:12px;color:var(--text2);margin-top:4px;}
+/* H診斷 pop-out 用 check-card 樣式 */
+.hd-summary-tags{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:20px;}
+.hd-summary-tag{background:var(--bg3);padding:4px 10px;border-radius:6px;font-size:12px;}
+.hd-summary-tag b{font-family:'JetBrains Mono',monospace;}
+.hd-check-cards{display:flex;flex-direction:column;gap:10px;}
+.hd-check-card{border-radius:10px;padding:14px 16px;}
+.hd-check-card-pass{background:rgba(52,211,153,.08);border:1px solid rgba(52,211,153,.3);}
+.hd-check-card-fail{background:rgba(248,81,73,.08);border:1px solid rgba(248,81,73,.3);}
+.hd-check-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.hd-check-card-left{display:flex;align-items:center;gap:8px;}
+.hd-check-card-icon{font-size:16px;}
+.hd-check-card-name{font-weight:700;font-size:14px;color:var(--text);}
+.hd-check-card-detail{font-size:12px;color:var(--text2);background:var(--bg2);padding:2px 8px;border-radius:4px;}
+.hd-check-card-body{margin-top:6px;font-size:12px;color:var(--text2);display:flex;justify-content:space-between;}
+.hd-check-card-body b{color:var(--text);font-family:'JetBrains Mono',monospace;}
 </style>
 </head>
 <body>
@@ -2641,9 +2676,17 @@ function renderTable(rows){
     var indEsc=ind.replace(/'/g,"\\'");
     var nameEsc=r.name.replace(/'/g,"\\'");
     extras.push('<a href="#" class="badge badge-blue report-link" onclick="openReport(\\''+r.stock_id+'\\',\\''+nameEsc+'\\',\\''+indEsc+'\\',event)">📊 產業報告</a>');
+    extras.push('<a class="badge strat-h report-link" style="text-decoration:none;cursor:pointer;" onclick="openHDiag(\\''+r.stock_id+'\\')">🔍 H 診斷</a>');
     var revYoy=r.rev_yoy!=null?(r.rev_yoy>=0?'+':'')+r.rev_yoy.toFixed(1)+'%':null;
     var revClass=r.rev_yoy!=null?(r.rev_yoy>0?'badge-green':r.rev_yoy<0?'badge-red':'badge-gray'):'';
     if(revYoy)extras.push('<span class="badge '+revClass+'">營收 '+revYoy+'</span>');
+    // 基本面篩選 badge
+    if(r.prof_pass===true){
+      var pLabel=r.prof_reason||'通過';
+      extras.push('<span class="badge badge-green">✓ '+pLabel+'</span>');
+    }else if(r.prof_pass===false){
+      extras.push('<span class="badge badge-red" title="'+(r.prof_reason||'')+'">✗ 基本面未達</span>');
+    }
     var fNet=r.foreign_net!=null?(r.foreign_net>=0?'+':'')+r.foreign_net.toLocaleString()+'張':null;
     var fClass=r.foreign_net!=null?(r.foreign_net>0?'badge-green':r.foreign_net<0?'badge-red':'badge-gray'):'';
     if(fNet)extras.push('<span class="badge '+fClass+'">外資 '+fNet+'</span>');
@@ -2865,9 +2908,114 @@ function closeReportModal(evt){
   }
 }
 
+// ── H 診斷 Pop-out ──
+function openHDiag(stockId){
+  var modal=document.getElementById('hDiagModal');
+  var content=document.getElementById('hDiagContent');
+  content.innerHTML='<div class="modal-loading"><div class="spinner"></div><br>H 策略診斷中⋯</div>';
+  modal.classList.add('active');
+  document.body.style.overflow='hidden';
+  fetch('/api/h-diagnose/single/'+stockId)
+    .then(function(res){return res.json();})
+    .then(function(d){
+      if(d.error){content.innerHTML='<div style="padding:20px;color:var(--red);">❌ '+d.error+'</div>';return;}
+      content.innerHTML=renderHDiagContent(d);
+    })
+    .catch(function(err){
+      content.innerHTML='<div style="padding:20px;color:var(--red);">❌ 請求失敗：'+err+'</div>';
+    });
+}
+
+function renderHDiagContent(r){
+  var d=r.diagnose||{};
+  var sm=d.summary||{};
+  var pc=d.passed_count||0;
+  var tc=d.total_checks||9;
+  var allPass=d.passed;
+
+  var html='<div class="modal-title">';
+  html+='<span>'+r.stock_id+' '+r.name+'</span>';
+  if(allPass){
+    html+='<span style="background:rgba(52,211,153,.2);color:#34d399;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">ALL PASS</span>';
+  }else{
+    html+='<span style="background:rgba(248,81,73,.15);color:#f85149;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">'+pc+' / '+tc+' 通過</span>';
+  }
+  html+='</div>';
+
+  // 摘要 tags
+  html+='<div class="hd-summary-tags">';
+  var tags=[
+    {l:'收盤',v:sm.close},
+    {l:'ADX',v:sm.adx},
+    {l:'RSI',v:sm.rsi14!=null?Math.round(sm.rsi14):null},
+    {l:'MA5',v:sm.ma5!=null?sm.ma5.toFixed(1):null},
+    {l:'MA60',v:sm.ma60!=null?sm.ma60.toFixed(2):null}
+  ];
+  tags.forEach(function(t){
+    html+='<span class="hd-summary-tag">'+t.l+' <b>'+(t.v!=null?t.v:'-')+'</b></span>';
+  });
+  html+='</div>';
+
+  // 基本面篩選
+  if(r.prof_pass!==null&&r.prof_pass!==undefined){
+    var profPass=r.prof_pass;
+    var profCls=profPass?'hd-check-card-pass':'hd-check-card-fail';
+    var profIcon=profPass?'\\u2705':'\\u274C';
+    var profLabel=profPass?(r.prof_reason||'通過'):(r.prof_reason||'未通過');
+    html+='<div style="margin:12px 0 4px;font-size:13px;font-weight:700;color:var(--text);">📊 選股基本面篩選</div>';
+    html+='<div class="hd-check-card '+profCls+'" style="margin-bottom:14px;">';
+    html+='<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">';
+    html+='<span style="font-size:16px;">'+profIcon+'</span>';
+    html+='<span style="font-weight:700;font-size:14px;">基本面濾網</span>';
+    html+='<span class="hd-check-card-detail">'+(profPass?'通過選股篩選':'被選股篩選濾除')+'</span>';
+    html+='</div>';
+    html+='<div style="display:flex;flex-direction:column;gap:4px;font-size:13px;padding-left:24px;">';
+    html+='<div>判定：<b>'+profLabel+'</b></div>';
+    if(r.latest_eps!=null) html+='<div>最新 EPS：<b>'+r.latest_eps.toFixed(2)+'</b>'+(r.eps_quarter?' <span style="color:var(--text2);font-size:11px;">('+r.eps_quarter+')</span>':'')+'</div>';
+    if(r.rev_yoy!=null) html+='<div>營收年增：<b>'+(r.rev_yoy>=0?'+':'')+r.rev_yoy.toFixed(1)+'%</b></div>';
+    if(!profPass&&r.prof_reason) html+='<div>濾除原因：<b style="color:var(--red);">'+r.prof_reason+'</b></div>';
+    html+='</div>';
+    html+='</div>';
+  }
+
+  // 9 項檢查卡片
+  html+='<div style="margin:4px 0;font-size:13px;font-weight:700;color:var(--text);">🔍 H策略 9 項進場條件</div>';
+  html+='<div class="hd-check-cards">';
+  (d.checks||[]).forEach(function(c,idx){
+    var cls=c.passed?'hd-check-card-pass':'hd-check-card-fail';
+    var icon=c.passed?'\\u2705':'\\u274C';
+    html+='<div class="hd-check-card '+cls+'">';
+    html+='<div class="hd-check-card-head">';
+    html+='<div class="hd-check-card-left">';
+    html+='<span class="hd-check-card-icon">'+icon+'</span>';
+    html+='<span class="hd-check-card-name">'+(idx+1)+'. '+c.name+'</span>';
+    html+='</div>';
+    html+='<span class="hd-check-card-detail">'+c.detail+'</span>';
+    html+='</div>';
+    html+='<div class="hd-check-card-body">';
+    html+='<span>實際值：<b>'+c.value+'</b></span>';
+    html+='<span>門檻：'+c.threshold+'</span>';
+    html+='</div>';
+    html+='</div>';
+  });
+  html+='</div>';
+
+  if(r.rt_time){
+    html+='<div class="modal-footer">盤中報價時間：'+r.rt_time+'</div>';
+  }
+  return html;
+}
+
+function closeHDiagModal(evt){
+  if(!evt||evt.target.classList.contains('modal-overlay')){
+    document.getElementById('hDiagModal').classList.remove('active');
+    document.body.style.overflow='';
+  }
+}
+
 // ESC 關閉 Modal
 document.addEventListener('keydown',function(e){
-  if(e.key==='Escape'){closeReportModal();}
+  if(e.key==='Escape'){closeReportModal();closeHDiagModal();}
 });
 </script>
 <!-- 產業報告 Modal -->
@@ -2876,6 +3024,15 @@ document.addEventListener('keydown',function(e){
     <button class="modal-close" onclick="closeReportModal()">&times;</button>
     <div id="reportContent">
       <div class="modal-loading"><div class="spinner"></div><br>AI 產業報告生成中...</div>
+    </div>
+  </div>
+</div>
+<!-- H 診斷 Modal -->
+<div class="modal-overlay" id="hDiagModal" onclick="closeHDiagModal(event)">
+  <div class="modal-box" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeHDiagModal()">&times;</button>
+    <div id="hDiagContent">
+      <div class="modal-loading"><div class="spinner"></div><br>H 策略診斷中⋯</div>
     </div>
   </div>
 </div>
@@ -3688,6 +3845,91 @@ def api_h_diagnose_status():
         "error": _h_diagnose_status["error"],
         "result": _h_diagnose_status["result"],
     })
+
+
+# ── 單股 H 策略即時診斷 API（選股頁用） ──
+@app.route("/api/h-diagnose/single/<stock_id>")
+def api_h_diagnose_single(stock_id):
+    """同步執行單股 H 策略診斷，回傳診斷結果 JSON。"""
+    try:
+        from screener import compute_screener_indicators
+        from data_fetcher import fetch_price, fetch_realtime_quote, _fetch, fetch_revenue
+        from fundamentals import get_revenue_summary
+        from strategies.master_chu import diagnose_h_strategy
+        from strategies._helpers import check_profitability
+
+        price_df = fetch_price(stock_id)
+        if price_df.empty or len(price_df) < 65:
+            return jsonify({"error": "歷史資料不足（需至少 65 天）"})
+
+        # 即時報價合併
+        rt = fetch_realtime_quote(stock_id)
+        rt_time = None
+        if rt and rt["price"]:
+            rt_date_str = rt.get("date", "")
+            rt_time = rt.get("time", "")
+            if rt_date_str:
+                rt_date = pd.Timestamp(f"{rt_date_str[:4]}-{rt_date_str[4:6]}-{rt_date_str[6:8]}")
+                last_hist = price_df["date"].iloc[-1]
+                if rt_date > last_hist:
+                    new_row = pd.DataFrame([{
+                        "date": rt_date, "open": rt.get("open") or rt["price"],
+                        "high": rt.get("high") or rt["price"],
+                        "low": rt.get("low") or rt["price"],
+                        "close": rt["price"], "volume": rt.get("volume", 0),
+                    }])
+                    price_df = pd.concat([price_df, new_row], ignore_index=True)
+                elif rt_date == last_hist:
+                    price_df.loc[price_df.index[-1], "close"] = rt["price"]
+
+        enriched = compute_screener_indicators(price_df)
+        diag = diagnose_h_strategy(enriched)
+
+        name = rt.get("name", stock_id) if rt else stock_id
+
+        # 基本面
+        prof_pass, prof_reason = None, ""
+        try:
+            prof_pass, prof_reason = check_profitability(stock_id)
+            prof_reason = prof_reason or ""
+        except Exception:
+            pass
+
+        # 營收年增率
+        rev_yoy = None
+        try:
+            rev_df = fetch_revenue(stock_id)
+            rev_summary = get_revenue_summary(rev_df)
+            rev_yoy = rev_summary.get("年增率(%)")
+        except Exception:
+            pass
+
+        # EPS
+        latest_eps, eps_quarter = None, ""
+        try:
+            start_eps = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
+            df_fin = _fetch("TaiwanStockFinancialStatements", stock_id, start_date=start_eps)
+            if not df_fin.empty and "type" in df_fin.columns:
+                eps_rows = df_fin[df_fin["type"] == "EPS"].copy()
+                if not eps_rows.empty:
+                    eps_rows["date"] = pd.to_datetime(eps_rows["date"])
+                    eps_rows = eps_rows.sort_values("date")
+                    latest_eps = float(eps_rows.iloc[-1]["value"])
+                    _d = eps_rows.iloc[-1]["date"]
+                    eps_quarter = f"{_d.year}Q{(_d.month - 1) // 3 + 1}"
+        except Exception:
+            pass
+
+        return jsonify(_sanitize_for_json({
+            "stock_id": stock_id, "name": name,
+            "close": diag.get("summary", {}).get("close"),
+            "diagnose": diag,
+            "prof_pass": prof_pass, "prof_reason": prof_reason,
+            "latest_eps": latest_eps, "eps_quarter": eps_quarter,
+            "rev_yoy": rev_yoy, "rt_time": rt_time,
+        }))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════
