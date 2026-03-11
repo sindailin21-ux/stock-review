@@ -833,7 +833,7 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans TC',sans-seri
 """
 
 def _nav(active: str) -> str:
-    pages = [("/", "查詢"), ("/portfolio", "持股管理"), ("/batch", "批次分析"), ("/screener", "選股"), ("/chu-review", "朱家泓覆盤")]
+    pages = [("/", "查詢"), ("/portfolio", "持股管理"), ("/batch", "批次分析"), ("/screener", "選股"), ("/chu-review", "朱家泓覆盤"), ("/h-diagnose", "H策略診斷")]
     links = "".join(
         f'<a href="{url}" class="{"active" if active==url else ""}">{label}</a>'
         for url, label in pages
@@ -1802,6 +1802,270 @@ document.addEventListener('keydown',function(e){
 """
 
 
+# ── H策略即時診斷頁 ──────────────────────────────────────────
+H_DIAGNOSE_PAGE = """<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>H策略診斷</title>
+__NAV_STYLE__
+<style>
+.page{padding:24px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:16px;}
+.card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;display:flex;flex-direction:column;gap:12px;}
+.card-title{font-size:15px;font-weight:600;}
+.btn{border:none;border-radius:8px;padding:10px 24px;font-size:14px;font-weight:600;cursor:pointer;font-family:'Noto Sans TC',sans-serif;}
+.btn-blue{background:var(--blue);color:#fff;}
+.btn-blue:hover{opacity:.85;}
+.btn-blue:disabled{opacity:.5;cursor:not-allowed;}
+.btn-gray{background:var(--bg3);color:var(--text2);border:1px solid var(--border);}
+.btn-gray:hover{border-color:var(--text2);color:var(--text);}
+.ctrl-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+.badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;white-space:nowrap;}
+.badge-green{background:rgba(63,185,80,.15);color:var(--green);}
+.badge-red{background:rgba(248,81,73,.15);color:var(--red);}
+.badge-orange{background:rgba(255,166,87,.15);color:var(--orange);}
+.summary-card{display:flex;gap:16px;flex-wrap:wrap;align-items:center;}
+.summary-item{display:flex;flex-direction:column;align-items:center;gap:2px;min-width:60px;}
+.summary-num{font-size:28px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+.summary-label{font-size:11px;color:var(--text2);}
+.summary-num.green{color:var(--green);}
+.summary-num.orange{color:var(--orange);}
+.spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin .8s linear infinite;margin:0 auto;}
+@keyframes spin{to{transform:rotate(360deg);}}
+/* H Diagnose specific */
+.stock-card{background:var(--bg2);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:16px;}
+.stock-header{display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap;}
+.stock-title{font-size:16px;font-weight:700;}
+.score-badge{font-size:20px;font-weight:700;font-family:'JetBrains Mono',monospace;}
+.score-badge.all-pass{color:var(--green);}
+.score-badge.most-pass{color:var(--orange);}
+.score-badge.few-pass{color:var(--red);}
+.summary-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px;margin-bottom:12px;}
+.summary-cell{font-size:12px;display:flex;justify-content:space-between;padding:4px 8px;background:var(--bg3);border-radius:4px;}
+.summary-cell .label{color:var(--text2);}
+.summary-cell .value{font-family:'JetBrains Mono',monospace;font-weight:600;}
+.check-row{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid var(--border);font-size:13px;}
+.check-row:last-child{border-bottom:none;}
+.check-icon{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:14px;flex-shrink:0;}
+.check-pass{background:rgba(63,185,80,.15);color:var(--green);}
+.check-fail{background:rgba(248,81,73,.15);color:var(--red);}
+.check-name{font-weight:600;min-width:140px;}
+.check-value{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text);}
+.check-threshold{font-size:11px;color:var(--text2);min-width:100px;}
+.check-detail{font-size:12px;color:var(--text2);margin-left:auto;}
+@media(max-width:768px){
+  .check-row{flex-wrap:wrap;gap:6px;}
+  .check-name{min-width:auto;}
+  .check-detail{margin-left:34px;width:100%;}
+  .summary-grid{grid-template-columns:repeat(auto-fill,minmax(130px,1fr));}
+}
+</style>
+</head>
+<body>
+__NAV__
+<div class="page">
+  <div class="card">
+    <div class="card-title">Strategy H 即時診斷 — 朱家泓最佳進場條件</div>
+    <div style="font-size:12px;color:var(--text2);line-height:1.6;">
+      9 項進場條件逐條檢查：ADX 趨勢、DI 方向、RSI 動能、四線多排、斜率、MA20 扣抵、站上 MA5、放量確認、乖離率。<br>
+      使用即時盤價（盤中 9:00-13:30）或最新收盤價進行診斷。
+    </div>
+    <div class="ctrl-row">
+      <textarea id="stockInput" rows="2" style="flex:1;min-width:200px;padding:8px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);color:var(--text);font-size:13px;font-family:'Noto Sans TC',sans-serif;resize:vertical;"
+        placeholder="輸入股票代號，逗號分隔：2330,2454,3008"></textarea>
+    </div>
+    <div class="ctrl-row">
+      <button class="btn btn-gray" onclick="loadFromPortfolio()">從持股帶入</button>
+      <button class="btn btn-blue" id="diagnoseBtn" onclick="runDiagnose()">開始診斷</button>
+      <span style="font-size:12px;color:var(--text2);" id="statusNote"></span>
+    </div>
+  </div>
+
+  <div class="card" id="overviewCard" style="display:none">
+    <div class="card-title">診斷總覽</div>
+    <div class="summary-card" id="overviewArea"></div>
+  </div>
+
+  <div id="resultArea"></div>
+</div>
+
+<script>
+function loadFromPortfolio(){
+  document.getElementById('statusNote').textContent='載入持股中...';
+  fetch('/api/portfolio')
+  .then(function(r){return r.json();})
+  .then(function(d){
+    var ids=(d.portfolio||[]).map(function(p){return p.stock_id;});
+    if(!ids.length){document.getElementById('statusNote').textContent='持股清單為空';return;}
+    document.getElementById('stockInput').value=ids.join(',');
+    document.getElementById('statusNote').textContent=ids.length+'檔持股已帶入';
+  })
+  .catch(function(e){document.getElementById('statusNote').textContent='載入失敗：'+e.message;});
+}
+
+var diagPollTimer=null;
+
+function runDiagnose(){
+  var raw=document.getElementById('stockInput').value.trim();
+  if(!raw){alert('請輸入股票代號');return;}
+  var ids=raw.split(/[,\\uff0c\\s]+/).filter(Boolean);
+  if(!ids.length){alert('請輸入至少一個股票代號');return;}
+
+  document.getElementById('diagnoseBtn').disabled=true;
+  document.getElementById('statusNote').textContent='診斷啟動中...';
+  document.getElementById('overviewCard').style.display='none';
+  document.getElementById('resultArea').innerHTML='';
+
+  fetch('/api/h-diagnose/run',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({stock_ids:ids})
+  })
+  .then(function(r){
+    if(!r.ok) return r.text().then(function(t){throw new Error(t);});
+    return r.json();
+  })
+  .then(function(d){
+    if(d.error){
+      document.getElementById('diagnoseBtn').disabled=false;
+      document.getElementById('statusNote').textContent=d.error;
+      return;
+    }
+    diagPollTimer=setInterval(pollDiagnose,2000);
+  })
+  .catch(function(e){
+    document.getElementById('diagnoseBtn').disabled=false;
+    document.getElementById('statusNote').textContent='啟動失敗：'+e;
+  });
+}
+
+function pollDiagnose(){
+  fetch('/api/h-diagnose/status')
+  .then(function(r){return r.json();})
+  .then(function(s){
+    document.getElementById('statusNote').textContent=s.current||'診斷中...';
+    if(!s.done) return;
+    clearInterval(diagPollTimer);
+    document.getElementById('diagnoseBtn').disabled=false;
+    if(s.error){
+      document.getElementById('statusNote').textContent='診斷失敗：'+s.error;
+      return;
+    }
+    var d=s.result;
+    var intraTag=d.is_intraday
+      ?' <span style="color:#10b981;font-size:12px;">\\u2022 即時盤價</span>'
+      :' <span style="color:var(--text2);font-size:12px;">\\u2022 收盤資料</span>';
+    document.getElementById('statusNote').innerHTML='診斷完成 ('+d.date+')'+intraTag;
+    renderOverview(d.results);
+    renderStockCards(d.results);
+  })
+  .catch(function(){});
+}
+
+function renderOverview(results){
+  if(!results||!results.length) return;
+  document.getElementById('overviewCard').style.display='flex';
+  var total=results.length, allPass=0, most=0, few=0;
+  results.forEach(function(r){
+    var d=r.diagnose||{};
+    if(d.error){few++;return;}
+    if(d.passed) allPass++;
+    else if((d.passed_count||0)>=7) most++;
+    else few++;
+  });
+  document.getElementById('overviewArea').innerHTML=
+    '<div class="summary-item"><span class="summary-num">'+total+'</span><span class="summary-label">診斷總數</span></div>'+
+    '<div class="summary-item"><span class="summary-num green">'+allPass+'</span><span class="summary-label">全數通過 (9/9)</span></div>'+
+    '<div class="summary-item"><span class="summary-num orange">'+most+'</span><span class="summary-label">接近通過 (7-8)</span></div>'+
+    '<div class="summary-item"><span class="summary-num" style="color:var(--red);">'+few+'</span><span class="summary-label">未達標 (&lt;7)</span></div>';
+}
+
+function fmtNum(v,dec){
+  if(v==null||v===undefined) return '-';
+  if(typeof v==='number') return dec!=null?v.toFixed(dec):v.toLocaleString();
+  return String(v);
+}
+
+function renderStockCards(results){
+  results.sort(function(a,b){
+    var da=a.diagnose||{}, db=b.diagnose||{};
+    if(da.passed&&!db.passed) return -1;
+    if(!da.passed&&db.passed) return 1;
+    return (db.passed_count||0)-(da.passed_count||0);
+  });
+
+  var html='';
+  results.forEach(function(r){
+    var d=r.diagnose||{};
+
+    if(d.error){
+      html+='<div class="stock-card"><div class="stock-header">';
+      html+='<span class="stock-title">'+r.stock_id+' '+r.name+'</span>';
+      html+='<span class="badge badge-red">'+d.error+'</span>';
+      html+='</div></div>';
+      return;
+    }
+
+    var pc=d.passed_count||0;
+    var tc=d.total_checks||9;
+    var scoreCls=pc===tc?'all-pass':(pc>=7?'most-pass':'few-pass');
+
+    html+='<div class="stock-card">';
+    html+='<div class="stock-header">';
+    html+='<span class="stock-title">'+r.stock_id+' '+r.name+'</span>';
+    if(r.close!=null) html+='<span style="font-family:JetBrains Mono,monospace;font-size:14px;">$'+fmtNum(r.close,2)+'</span>';
+    if(r.rt_time) html+='<span style="font-size:11px;color:var(--text2);">'+r.rt_time+'</span>';
+    html+='<span class="score-badge '+scoreCls+'">'+pc+'/'+tc+'</span>';
+    html+='<span class="badge '+(d.passed?'badge-green':'badge-red')+'">'+(d.passed?'\\u2705 全數通過':'\\u274c 未全數通過')+'</span>';
+    html+='</div>';
+
+    // Summary grid
+    var sm=d.summary||{};
+    html+='<div class="summary-grid">';
+    var fields=[
+      ['close','收盤',2],['ma5','MA5',2],['ma10','MA10',2],['ma20','MA20',2],['ma60','MA60',2],
+      ['adx','ADX(8)',2],['plus_di','+DI',2],['minus_di','-DI',2],['rsi14','RSI(14)',2],
+      ['volume','成交量',0],['vol_ma5','VMA5',0]
+    ];
+    fields.forEach(function(f){
+      var v=sm[f[0]];
+      var disp=(v!=null)?fmtNum(v,f[2]):'-';
+      html+='<div class="summary-cell"><span class="label">'+f[1]+'</span><span class="value">'+disp+'</span></div>';
+    });
+    if(sm.slopes){
+      ['ma5','ma10','ma20','ma60'].forEach(function(k){
+        var sv=sm.slopes[k];
+        var disp=(sv!=null)?((sv>0?'+':'')+sv.toFixed(4)):'-';
+        html+='<div class="summary-cell"><span class="label">'+k.toUpperCase()+' 斜率</span><span class="value">'+disp+'</span></div>';
+      });
+    }
+    html+='</div>';
+
+    // 9 checks
+    html+='<div style="border:1px solid var(--border);border-radius:8px;overflow:hidden;">';
+    (d.checks||[]).forEach(function(c,idx){
+      html+='<div class="check-row">';
+      html+='<div class="check-icon '+(c.passed?'check-pass':'check-fail')+'">'+(c.passed?'\\u2713':'\\u2717')+'</div>';
+      html+='<span class="check-name">'+(idx+1)+'. '+c.name+'</span>';
+      html+='<span class="check-value">'+c.value+'</span>';
+      html+='<span class="check-threshold">門檻: '+c.threshold+'</span>';
+      html+='<span class="check-detail">'+c.detail+'</span>';
+      html+='</div>';
+    });
+    html+='</div>';
+
+    html+='</div>';
+  });
+
+  document.getElementById('resultArea').innerHTML=html;
+}
+</script>
+</body>
+</html>
+"""
+
+
 # ── 選股頁 ─────────────────────────────────────────────────
 SCREENER_PAGE = """<!DOCTYPE html>
 <html lang="zh-TW">
@@ -2582,6 +2846,11 @@ def page_chu_review():
     return _render(CHU_REVIEW_PAGE, "/chu-review"), 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
+@app.route("/h-diagnose")
+def page_h_diagnose():
+    return _render(H_DIAGNOSE_PAGE, "/h-diagnose"), 200, {"Content-Type": "text/html; charset=utf-8"}
+
+
 # ═══════════════════════════════════════════════════════════
 # 路由：Portfolio API
 # ═══════════════════════════════════════════════════════════
@@ -3171,6 +3440,164 @@ def api_chu_review_status():
         "current": _chu_review_status["current"],
         "error": _chu_review_status["error"],
         "result": _chu_review_status["result"],
+    })
+
+
+# ═══════════════════════════════════════════════════════════
+# 路由：H策略即時診斷 API（背景線程 + polling）
+# ═══════════════════════════════════════════════════════════
+
+_h_diagnose_status = {
+    "running": False, "done": False, "error": None,
+    "progress": 0, "total": 0, "current": "",
+    "result": None,
+}
+
+
+def _run_h_diagnose_bg(stock_ids):
+    """背景線程執行 H 策略診斷，避免 gunicorn timeout。"""
+    global _h_diagnose_status
+    try:
+        _h_diagnose_status["running"] = True
+        _h_diagnose_status["done"] = False
+        _h_diagnose_status["error"] = None
+        _h_diagnose_status["result"] = None
+
+        from screener import compute_screener_indicators
+        from data_fetcher import fetch_price, fetch_realtime_quote
+        from strategies.master_chu import diagnose_h_strategy
+        from datetime import date as _date
+
+        today_str = _date.today().strftime("%Y-%m-%d")
+        results = []
+        is_intraday = False
+        _h_diagnose_status["total"] = len(stock_ids)
+
+        for i, sid in enumerate(stock_ids):
+            _h_diagnose_status["progress"] = i + 1
+            _h_diagnose_status["current"] = f"診斷 {sid}（{i+1}/{len(stock_ids)}）"
+
+            try:
+                price_df = fetch_price(sid)
+                if price_df.empty or len(price_df) < 65:
+                    results.append({
+                        "stock_id": sid, "name": sid,
+                        "close": None,
+                        "diagnose": {
+                            "passed": False, "passed_count": 0,
+                            "total_checks": 9, "checks": [], "summary": {},
+                            "error": "歷史資料不足（需至少 65 天）",
+                        },
+                    })
+                    continue
+
+                # 即時報價：合併到歷史資料的最新一筆
+                rt = fetch_realtime_quote(sid)
+                rt_time = None
+                if rt and rt["price"]:
+                    rt_date_str = rt.get("date", "")
+                    rt_time = rt.get("time", "")
+                    if rt_date_str:
+                        rt_date = pd.Timestamp(
+                            f"{rt_date_str[:4]}-{rt_date_str[4:6]}-{rt_date_str[6:8]}"
+                        )
+                        last_hist_date = price_df["date"].iloc[-1]
+                        if rt_date > last_hist_date:
+                            new_row = pd.DataFrame([{
+                                "date": rt_date,
+                                "open": rt.get("open") or rt["price"],
+                                "high": rt.get("high") or rt["price"],
+                                "low": rt.get("low") or rt["price"],
+                                "close": rt["price"],
+                                "volume": rt.get("volume", 0),
+                            }])
+                            price_df = pd.concat([price_df, new_row], ignore_index=True)
+                            is_intraday = True
+                        elif rt_date == last_hist_date:
+                            price_df.loc[price_df.index[-1], "close"] = rt["price"]
+                            if rt.get("high"):
+                                price_df.loc[price_df.index[-1], "high"] = rt["high"]
+                            if rt.get("low"):
+                                price_df.loc[price_df.index[-1], "low"] = rt["low"]
+                            if rt.get("volume"):
+                                price_df.loc[price_df.index[-1], "volume"] = rt["volume"]
+                            is_intraday = True
+
+                enriched = compute_screener_indicators(price_df)
+                diag = diagnose_h_strategy(enriched)
+
+                # 取得名稱
+                name = rt.get("name", sid) if rt else sid
+                if name == sid and "stock_name" in price_df.columns:
+                    sn = price_df["stock_name"].iloc[-1]
+                    if pd.notna(sn):
+                        name = str(sn)
+
+                close_val = diag.get("summary", {}).get("close")
+                item = {
+                    "stock_id": sid, "name": name,
+                    "close": close_val,
+                    "diagnose": diag,
+                }
+                if rt_time:
+                    item["rt_time"] = rt_time
+                results.append(item)
+
+            except Exception as e:
+                print(f"H策略診斷 {sid} 失敗：{e}")
+                results.append({
+                    "stock_id": sid, "name": sid,
+                    "close": None,
+                    "diagnose": {
+                        "passed": False, "passed_count": 0,
+                        "total_checks": 9, "checks": [], "summary": {},
+                        "error": f"診斷失敗：{e}",
+                    },
+                })
+
+        _h_diagnose_status["result"] = _sanitize_for_json({
+            "date": today_str, "results": results, "is_intraday": is_intraday,
+        })
+
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        _h_diagnose_status["error"] = str(e)
+    finally:
+        _h_diagnose_status["done"] = True
+        _h_diagnose_status["running"] = False
+
+
+@app.route("/api/h-diagnose/run", methods=["POST"])
+def api_h_diagnose_run():
+    global _h_diagnose_status
+    if _h_diagnose_status.get("running"):
+        return jsonify({"started": True, "msg": "已在執行中"})
+
+    data = request.json or {}
+    stock_ids = data.get("stock_ids", [])
+    if not stock_ids:
+        return jsonify({"error": "請提供股票代號"}), 400
+
+    _h_diagnose_status = {
+        "running": False, "done": False, "error": None,
+        "progress": 0, "total": len(stock_ids), "current": "啟動中...",
+        "result": None,
+    }
+    t = threading.Thread(target=_run_h_diagnose_bg, args=(stock_ids,), daemon=True)
+    t.start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/h-diagnose/status", methods=["GET"])
+def api_h_diagnose_status():
+    return jsonify({
+        "running": _h_diagnose_status["running"],
+        "done": _h_diagnose_status["done"],
+        "progress": _h_diagnose_status["progress"],
+        "total": _h_diagnose_status["total"],
+        "current": _h_diagnose_status["current"],
+        "error": _h_diagnose_status["error"],
+        "result": _h_diagnose_status["result"],
     })
 
 
