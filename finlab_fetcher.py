@@ -73,63 +73,85 @@ def load_daily_cache(target_date: str | None = None, status: dict | None = None)
     login()
     _cache = {"date": date_str}
 
+    # 記憶體優化：只保留最近 N 天 + 轉 float32
+    # 選股只需 ~250 天（5 個月 × 30 + 100 暖機），400 天足夠
+    _TRIM_ROWS = 400
+
+    def _trim(df):
+        """裁剪到最近 N 行 + 轉 float32，大幅節省記憶體。"""
+        if df is None or not hasattr(df, "iloc"):
+            return df
+        trimmed = df.iloc[-_TRIM_ROWS:].copy() if len(df) > _TRIM_ROWS else df.copy()
+        # float64 → float32 省一半記憶體
+        float64_cols = trimmed.select_dtypes(include=[np.float64]).columns
+        if len(float64_cols):
+            trimmed[float64_cols] = trimmed[float64_cols].astype(np.float32)
+        return trimmed
+
     # 【價量】
     if status:
         status["current"] = "FinLab：載入全市場價量資料..."
     print("📥 FinLab：載入全市場價量...")
-    _cache["close"]  = data.get("price:收盤價")
-    _cache["open"]   = data.get("price:開盤價")
-    _cache["high"]   = data.get("price:最高價")
-    _cache["low"]    = data.get("price:最低價")
-    _cache["volume"] = data.get("price:成交股數")
+    _cache["close"]  = _trim(data.get("price:收盤價"))
+    _cache["open"]   = _trim(data.get("price:開盤價"))
+    _cache["high"]   = _trim(data.get("price:最高價"))
+    _cache["low"]    = _trim(data.get("price:最低價"))
+    _cache["volume"] = _trim(data.get("price:成交股數"))
 
     # 【技術指標 — FinLab data.indicator()，TA-Lib 引擎】
     if status:
         status["current"] = "FinLab：計算全市場技術指標..."
     print("📥 FinLab：計算全市場技術指標...")
-    _cache["sma5"]  = data.indicator("SMA", timeperiod=5)
-    _cache["sma10"] = data.indicator("SMA", timeperiod=10)
-    _cache["sma20"] = data.indicator("SMA", timeperiod=20)
-    _cache["sma60"] = data.indicator("SMA", timeperiod=60)
+    _cache["sma5"]  = _trim(data.indicator("SMA", timeperiod=5))
+    _cache["sma10"] = _trim(data.indicator("SMA", timeperiod=10))
+    _cache["sma20"] = _trim(data.indicator("SMA", timeperiod=20))
+    _cache["sma60"] = _trim(data.indicator("SMA", timeperiod=60))
 
-    _cache["rsi5"]  = data.indicator("RSI", timeperiod=5)
-    _cache["rsi10"] = data.indicator("RSI", timeperiod=10)
-    _cache["rsi14"] = data.indicator("RSI", timeperiod=14)
+    _cache["rsi5"]  = _trim(data.indicator("RSI", timeperiod=5))
+    _cache["rsi10"] = _trim(data.indicator("RSI", timeperiod=10))
+    _cache["rsi14"] = _trim(data.indicator("RSI", timeperiod=14))
 
-    _cache["adx8"]      = data.indicator("ADX", timeperiod=8)
-    _cache["plus_di8"]  = data.indicator("PLUS_DI", timeperiod=8)
-    _cache["minus_di8"] = data.indicator("MINUS_DI", timeperiod=8)
+    _cache["adx8"]      = _trim(data.indicator("ADX", timeperiod=8))
+    _cache["plus_di8"]  = _trim(data.indicator("PLUS_DI", timeperiod=8))
+    _cache["minus_di8"] = _trim(data.indicator("MINUS_DI", timeperiod=8))
 
     # MACD 回傳 tuple: (macd, signal, hist)
     macd_result = data.indicator("MACD", fastperiod=6, slowperiod=13, signalperiod=9)
-    _cache["macd"]        = macd_result[0]
-    _cache["macd_signal"] = macd_result[1]
-    _cache["macd_hist"]   = macd_result[2]
+    _cache["macd"]        = _trim(macd_result[0])
+    _cache["macd_signal"] = _trim(macd_result[1])
+    _cache["macd_hist"]   = _trim(macd_result[2])
 
     # 【法人買賣超】
     if status:
         status["current"] = "FinLab：載入法人買賣超..."
     print("📥 FinLab：載入法人買賣超...")
-    _cache["foreign_net"] = data.get(
+    _cache["foreign_net"] = _trim(data.get(
         "institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)"
-    )
-    _cache["trust_net"] = data.get(
+    ))
+    _cache["trust_net"] = _trim(data.get(
         "institutional_investors_trading_summary:投信買賣超股數"
-    )
+    ))
 
-    # 【營收】
+    # 【營收】— 月頻資料不裁剪行數，但轉 float32
     if status:
         status["current"] = "FinLab：載入營收資料..."
     print("📥 FinLab：載入營收資料...")
-    _cache["revenue"]      = data.get("monthly_revenue:當月營收")
-    _cache["prev_revenue"] = data.get("monthly_revenue:上月營收")
-    _cache["yoy_revenue"]  = data.get("monthly_revenue:去年當月營收")
+    _cache["revenue"]      = _trim(data.get("monthly_revenue:當月營收"))
+    _cache["prev_revenue"] = _trim(data.get("monthly_revenue:上月營收"))
+    _cache["yoy_revenue"]  = _trim(data.get("monthly_revenue:去年當月營收"))
 
-    # 【EPS】
+    # 【EPS】— 季頻資料不裁剪
     if status:
         status["current"] = "FinLab：載入 EPS 資料..."
     print("📥 FinLab：載入 EPS...")
-    _cache["eps"] = data.get("financial_statement:每股盈餘")
+    _cache["eps"] = _trim(data.get("financial_statement:每股盈餘"))
+
+    # 計算記憶體用量
+    total_mb = sum(
+        v.memory_usage(deep=True).sum() for v in _cache.values()
+        if hasattr(v, "memory_usage")
+    ) / 1024 / 1024
+    print(f"📊 FinLab 快取記憶體用量：{total_mb:.0f} MB")
 
     # 存磁碟快取
     if status:
@@ -138,7 +160,8 @@ def load_daily_cache(target_date: str | None = None, status: dict | None = None)
     try:
         with open(pkl_path, "wb") as f:
             pickle.dump(_cache, f)
-        print(f"✅ FinLab 快取已儲存（{pkl_path}）")
+        pkl_size = os.path.getsize(pkl_path) / 1024 / 1024
+        print(f"✅ FinLab 快取已儲存（{pkl_size:.0f} MB）")
     except Exception as e:
         print(f"⚠️ FinLab 快取儲存失敗：{e}")
 
