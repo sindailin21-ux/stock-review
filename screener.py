@@ -30,8 +30,14 @@ def compute_screener_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """
     計算選股策略所需的技術指標。
     MA(5,20,60)、MACD(6,13,9)、RSI(5)、RSI(10)、VMA5
+
+    若 DataFrame 已含 FinLab 預計算指標（s_ma5 欄位存在），直接返回。
     """
     if df.empty or len(df) < 20:
+        return df
+
+    # FinLab 預計算指標已存在 → 跳過重複計算
+    if "s_ma5" in df.columns:
         return df
 
     df = df.copy()

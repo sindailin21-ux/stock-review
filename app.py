@@ -342,31 +342,22 @@ def _run_batch(portfolio_df: pd.DataFrame, force: bool, today: str):
 
 def _run_screener(strategies: list, target_date: str = None, force_refresh: bool = False):
     """
-    全自動選股流程（100% TWSE + TPEX 公開資料，不使用 FinMind）：
+    全自動選股流程（FinLab VIP 批次資料 + 每日快取 + 指標預計算）：
     Phase 1: TWSE/TPEX 全市場日行情 → 流動性過濾
-    Phase 2: 逐股載入歷史行情（TWSE STOCK_DAY / TPEX 個股月報，約 5 個月）
-    Phase 3: 批次載入法人籌碼（若策略 D 啟用）
-    Phase 4: 逐股跑策略掃描（全部從 cache 讀取）
+    Phase 2: FinLab 每日快取（全市場價量 + 指標 + 法人 + 營收 + EPS）
+    Phase 3: 逐股跑策略掃描
+    Phase 4: 補充基本面資料
+    Phase 5: Watchlist 追蹤
 
-    force_refresh: 若為 True，忽略本地快取，強制重新抓取資料。
+    force_refresh: 若為 True，忽略 FinLab 磁碟快取，強制重新抓取。
     """
     global _screener_status
 
-    import pickle, os, hashlib
+    import os
 
-    from data_fetcher import fetch_market_daily
-    from data_fetcher import fetch_stock_prices_batch, fetch_institutional_batch, fetch_industry_map, fetch_institutional_single
-    from data_fetcher import fetch_revenue, reset_finmind_quota, reset_mops_cache
-    from fundamentals import get_revenue_summary
+    from data_fetcher import fetch_market_daily, fetch_industry_map
     from screener import scan_stocks
-
-    # 重置 FinMind 熔斷旗標 + MOPS 快取（每次新掃描重新嘗試）
-    reset_finmind_quota()
-    reset_mops_cache()
-
-    # ── 本地快取（同日不重抓 TWSE/TPEX）──
-    cache_dir = os.path.join(os.path.dirname(__file__), ".cache")
-    os.makedirs(cache_dir, exist_ok=True)
+    import finlab_fetcher
 
     try:
         # ── Phase 1: 全市場行情 + 流動性過濾 ──
@@ -413,101 +404,59 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
             _screener_status["error"] = "過濾後無符合條件的股票"
             return
 
-        # ── 快取 key：用 target_date 或今日日期 ──
         from datetime import datetime as _dt
         cache_date = target_date or _dt.today().strftime("%Y-%m-%d")
-        cache_key  = f"scan_{cache_date}"
-        cache_file = os.path.join(cache_dir, f"{cache_key}.pkl")
 
-        # 建立名稱對照表 + 交易所對照表
+        # 建立名稱對照表
         name_map = dict(zip(market_df["stock_id"], market_df["name"])) if "name" in market_df.columns else {}
-        exchange_map = dict(zip(market_df["stock_id"], market_df["exchange"])) if "exchange" in market_df.columns else {}
 
         # ── Phase 1.5: 產業分類 ──
         _screener_status["current"] = "載入產業分類..."
         industry_map = fetch_industry_map()
 
-        # ── Phase 2 & 3: 歷史行情 + 法人籌碼（有快取直接載入）──
-        use_cache = os.path.exists(cache_file) and not force_refresh
+        # ── Phase 2: FinLab 每日快取（全市場批次載入）──
+        if _screener_status["cancel"]:
+            _screener_status["error"] = "已取消"
+            return
 
-        if force_refresh and os.path.exists(cache_file):
-            try:
-                os.remove(cache_file)
-                print(f"🔄 強制重抓：已刪除快取 {cache_file}")
-            except Exception as e:
-                print(f"⚠️ 無法刪除快取：{e}")
+        # 強制重抓時清除 FinLab 快取
+        if force_refresh:
+            finlab_fetcher.reset_cache()
+            # 同時刪除磁碟快取
+            pkl_path = os.path.join(finlab_fetcher.CACHE_DIR, f"finlab_{cache_date}.pkl")
+            if os.path.exists(pkl_path):
+                try:
+                    os.remove(pkl_path)
+                    print(f"🔄 強制重抓：已刪除 FinLab 快取 {pkl_path}")
+                except Exception as e:
+                    print(f"⚠️ 無法刪除 FinLab 快取：{e}")
 
-        if use_cache:
-            # 讀取快取建立時間
-            cache_mtime = os.path.getmtime(cache_file)
-            cache_ts = _dt.fromtimestamp(cache_mtime).strftime("%Y-%m-%d %H:%M:%S")
-            _screener_status["cache_info"] = {
-                "from_cache": True,
-                "cache_time": cache_ts,
-                "cache_date": cache_date,
-            }
-            _screener_status["current"] = f"⚡ 載入本地快取（{cache_date}，建立於 {cache_ts}）..."
-            print(f"⚡ 使用快取：{cache_file}（建立於 {cache_ts}）")
-            with open(cache_file, "rb") as f:
-                cached = pickle.load(f)
-            price_cache = cached["price_cache"]
-            inst_cache  = cached["inst_cache"]
-        else:
-            # Phase 2: 逐股載入歷史行情
-            if _screener_status["cancel"]:
-                _screener_status["error"] = "已取消"
-                return
-            price_cache = fetch_stock_prices_batch(
-                stock_ids=final_ids,
-                exchange_map=exchange_map,
-                target_date=target_date,
-                months=5,
-                status=_screener_status,
-            )
+        finlab_fetcher.load_daily_cache(cache_date, status=_screener_status)
 
-            # Phase 3: 批次載入法人籌碼
-            inst_cache = {}
-            if _screener_status["cancel"]:
-                _screener_status["error"] = "已取消"
-                return
-            inst_cache = fetch_institutional_batch(target_date, 5, _screener_status)
+        cache_info = finlab_fetcher.get_cache_info()
+        _screener_status["cache_info"] = {
+            "from_cache": True,
+            "cache_time": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "cache_date": cache_date,
+            "source": "FinLab",
+            "n_stocks": cache_info.get("n_stocks", 0),
+        }
 
-            # 寫入快取
-            try:
-                with open(cache_file, "wb") as f:
-                    pickle.dump({"price_cache": price_cache, "inst_cache": inst_cache}, f)
-                cache_ts = _dt.now().strftime("%Y-%m-%d %H:%M:%S")
-                _screener_status["cache_info"] = {
-                    "from_cache": False,
-                    "cache_time": cache_ts,
-                    "cache_date": cache_date,
-                }
-                print(f"💾 快取已儲存：{cache_file}")
-            except Exception as e:
-                print(f"⚠️ 快取儲存失敗：{e}")
-                _screener_status["cache_info"] = {
-                    "from_cache": False,
-                    "cache_time": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "cache_date": cache_date,
-                }
+        if _screener_status["cancel"]:
+            _screener_status["error"] = "已取消"
+            return
 
-        # ── Phase 4: 策略掃描（全部從 cache 讀取）──
+        # ── Phase 3: 策略掃描 ──
         _screener_status["total"] = len(final_ids)
         _screener_status["current"] = f"策略掃描中 (0/{len(final_ids)})"
 
-        def _fetch_price_cached(sid):
-            return price_cache.get(sid, pd.DataFrame())
+        def _fetch_price_finlab(sid):
+            """從 FinLab 快取取得 enriched DataFrame（含 s_* 指標）"""
+            return finlab_fetcher.get_enriched_df(sid)
 
-        def _fetch_inst_cached(sid):
-            if sid in inst_cache:
-                return inst_cache[sid]
-            # TPEX 法人全市場被封時，按需逐股從 FinMind 查詢
-            if exchange_map.get(sid) == "tpex":
-                df = fetch_institutional_single(sid)
-                if not df.empty:
-                    inst_cache[sid] = df
-                return df
-            return pd.DataFrame()
+        def _fetch_inst_finlab(sid):
+            """從 FinLab 快取取得法人買賣超 DataFrame"""
+            return finlab_fetcher.get_institutional_df(sid)
 
         def _get_name_cached(sid, price_df):
             if sid in name_map:
@@ -518,38 +467,29 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
             stock_ids=final_ids,
             strategies=strategies,
             status=_screener_status,
-            fetch_price_fn=_fetch_price_cached,
-            fetch_institutional_fn=_fetch_inst_cached,
+            fetch_price_fn=_fetch_price_finlab,
+            fetch_institutional_fn=_fetch_inst_finlab,
             get_name_fn=_get_name_cached,
             cancel_flag={"status_ref": _screener_status},
             industry_map=industry_map,
         )
 
-        # ── Phase 5: 補充法人買賣超 + 營收年增 ──
+        # ── Phase 4: 補充法人買賣超 + 營收年增 + 基本面 ──
         _screener_status["current"] = f"補充基本面資料（{len(rows)} 檔）"
-        import time as _time
         for r in rows:
             sid = r["stock_id"]
-            # 法人買賣超（最近一日淨額，股→張）
-            inst_df = inst_cache.get(sid, pd.DataFrame())
-            if not inst_df.empty:
-                latest_inst = inst_df.iloc[-1]
-                fb = int(latest_inst.get("Foreign_Investor_Buy", 0))
-                fs = int(latest_inst.get("Foreign_Investor_Sell", 0))
-                tb = int(latest_inst.get("Investment_Trust_Buy", 0))
-                ts = int(latest_inst.get("Investment_Trust_Sell", 0))
-                r["foreign_net"] = (fb - fs) // 1000   # 張
-                r["trust_net"] = (tb - ts) // 1000
-            else:
-                r["foreign_net"] = None
-                r["trust_net"] = None
-            # 營收年增率
+
+            # 法人買賣超（最近一日淨額，張）
+            foreign_net, trust_net = finlab_fetcher.get_latest_institutional_net(sid)
+            r["foreign_net"] = foreign_net
+            r["trust_net"] = trust_net
+
+            # 營收年增率（直接從 FinLab 快取計算）
             try:
-                rev_df = fetch_revenue(sid)
-                rev_summary = get_revenue_summary(rev_df)
-                r["rev_yoy"] = rev_summary.get("年增率(%)")
+                r["rev_yoy"] = finlab_fetcher.get_revenue_yoy(sid)
             except Exception:
                 r["rev_yoy"] = None
+
             # 基本面篩選
             try:
                 from strategies._helpers import check_profitability
@@ -559,15 +499,25 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
             except Exception:
                 r["prof_pass"] = None
                 r["prof_reason"] = ""
-            _time.sleep(0.15)  # FinMind rate limit
 
-        # ── Phase 6: Watchlist 追蹤（雙池系統 V2.0）──
+        # ── Phase 5: Watchlist 追蹤（雙池系統 V2.0）──
         _screener_status["current"] = "更新追蹤清單..."
         try:
             from watchlist import update_watchlist_after_scan
             from screener import compute_screener_indicators
+
+            # FinLab proxy：讓 watchlist 能透過 stock_id 取得 enriched df
+            class _FinLabPriceProxy:
+                def __contains__(self, sid):
+                    return bool(finlab_fetcher.get_enriched_df(str(sid)).shape[0])
+                def get(self, sid, default=None):
+                    df = finlab_fetcher.get_enriched_df(str(sid))
+                    return df if not df.empty else default
+                def __getitem__(self, sid):
+                    return finlab_fetcher.get_enriched_df(str(sid))
+
             rows = update_watchlist_after_scan(
-                rows, cache_date, price_cache, compute_screener_indicators
+                rows, cache_date, _FinLabPriceProxy(), compute_screener_indicators
             )
         except Exception as e:
             print(f"⚠️ watchlist 更新失敗（不影響結果）：{e}")
@@ -587,6 +537,8 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
 
         _screener_status["rows"] = rows
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         _screener_status["error"] = str(e)
     finally:
         _screener_status["done"]    = True
@@ -3486,7 +3438,8 @@ def _run_chu_review_bg(stock_ids):
 
         from strategies import discover_strategies, get_strategy
         from screener import compute_screener_indicators
-        from data_fetcher import fetch_price, fetch_realtime_quote, fetch_industry_map
+        from data_fetcher import fetch_realtime_quote, fetch_industry_map
+        import finlab_fetcher
         from datetime import date as _date
 
         discover_strategies()
@@ -3501,6 +3454,10 @@ def _run_chu_review_bg(stock_ids):
         except Exception:
             ind_map = {}
 
+        # 確保 FinLab 快取已載入
+        _chu_review_status["current"] = "載入 FinLab 快取..."
+        finlab_fetcher.load_daily_cache()
+
         today_str = _date.today().strftime("%Y-%m-%d")
         reviews = []
         summary = {"total": 0, "healthy": 0, "reduce": 0, "alert": 0, "take_profit": 0, "buy_point": 0}
@@ -3512,7 +3469,8 @@ def _run_chu_review_bg(stock_ids):
             _chu_review_status["current"] = f"覆盤 {sid}（{i+1}/{len(stock_ids)}）"
 
             try:
-                price_df = fetch_price(sid)
+                # 使用 get_enriched_df 確保指標與選股器一致（FinLab TA-Lib）
+                price_df = finlab_fetcher.get_enriched_df(sid)
                 if price_df.empty or len(price_df) < 20:
                     reviews.append({
                         "stock_id": sid, "name": sid, "close": None, "change_pct": 0,
@@ -3531,6 +3489,9 @@ def _run_chu_review_bg(stock_ids):
                         rt_date = pd.Timestamp(f"{rt_date_str[:4]}-{rt_date_str[4:6]}-{rt_date_str[6:8]}")
                         last_hist_date = price_df["date"].iloc[-1]
                         if rt_date > last_hist_date:
+                            # 新的一天：drop s_* 欄位後加入新列，強制重算指標
+                            s_cols = [c for c in price_df.columns if c.startswith("s_")]
+                            price_df = price_df.drop(columns=s_cols)
                             new_row = pd.DataFrame([{
                                 "date": rt_date,
                                 "open": rt.get("open") or rt["price"],
@@ -3542,6 +3503,7 @@ def _run_chu_review_bg(stock_ids):
                             price_df = pd.concat([price_df, new_row], ignore_index=True)
                             is_intraday = True
                         elif rt_date == last_hist_date:
+                            # 同一天：只更新 OHLCV，保留 FinLab 指標
                             price_df.loc[price_df.index[-1], "close"] = rt["price"]
                             if rt.get("high"):
                                 price_df.loc[price_df.index[-1], "high"] = rt["high"]
@@ -3549,6 +3511,10 @@ def _run_chu_review_bg(stock_ids):
                                 price_df.loc[price_df.index[-1], "low"] = rt["low"]
                             if rt.get("volume"):
                                 price_df.loc[price_df.index[-1], "volume"] = rt["volume"]
+                                # volume 更新後需重算 vol_ma5 / vol_ratio
+                                price_df["s_vol_ma5"] = price_df["volume"].rolling(window=5).mean().round(0)
+                                vol_ma5 = price_df["s_vol_ma5"].replace(0, np.nan)
+                                price_df["s_vol_ratio"] = (price_df["volume"] / vol_ma5).round(2)
                             is_intraday = True
 
                 enriched = compute_screener_indicators(price_df)
@@ -3656,12 +3622,15 @@ def _run_h_diagnose_bg(stock_ids):
         _h_diagnose_status["result"] = None
 
         from screener import compute_screener_indicators
-        from data_fetcher import fetch_price, fetch_realtime_quote, fetch_institutional_single, fetch_revenue, _fetch
-        from fundamentals import get_revenue_summary
+        from data_fetcher import fetch_realtime_quote
         from strategies._helpers import check_profitability
         from strategies.master_chu import diagnose_h_strategy
+        import finlab_fetcher
         from datetime import date as _date
-        import time as _time
+
+        # 確保 FinLab 快取已載入
+        _h_diagnose_status["current"] = "載入 FinLab 快取..."
+        finlab_fetcher.load_daily_cache()
 
         today_str = _date.today().strftime("%Y-%m-%d")
         results = []
@@ -3673,7 +3642,8 @@ def _run_h_diagnose_bg(stock_ids):
             _h_diagnose_status["current"] = f"診斷 {sid}（{i+1}/{len(stock_ids)}）"
 
             try:
-                price_df = fetch_price(sid)
+                # 使用 get_enriched_df 確保指標與選股器一致（FinLab TA-Lib）
+                price_df = finlab_fetcher.get_enriched_df(sid)
                 if price_df.empty or len(price_df) < 65:
                     results.append({
                         "stock_id": sid, "name": sid,
@@ -3689,6 +3659,7 @@ def _run_h_diagnose_bg(stock_ids):
                 # 即時報價：合併到歷史資料的最新一筆
                 rt = fetch_realtime_quote(sid)
                 rt_time = None
+                need_recompute = False
                 if rt and rt["price"]:
                     rt_date_str = rt.get("date", "")
                     rt_time = rt.get("time", "")
@@ -3698,6 +3669,7 @@ def _run_h_diagnose_bg(stock_ids):
                         )
                         last_hist_date = price_df["date"].iloc[-1]
                         if rt_date > last_hist_date:
+                            # 新的一天：加入新列，需要重算指標
                             new_row = pd.DataFrame([{
                                 "date": rt_date,
                                 "open": rt.get("open") or rt["price"],
@@ -3706,9 +3678,14 @@ def _run_h_diagnose_bg(stock_ids):
                                 "close": rt["price"],
                                 "volume": rt.get("volume", 0),
                             }])
+                            # 先 drop s_* 欄位再合併，強制重算全部指標
+                            s_cols = [c for c in price_df.columns if c.startswith("s_")]
+                            price_df = price_df.drop(columns=s_cols)
                             price_df = pd.concat([price_df, new_row], ignore_index=True)
+                            need_recompute = True
                             is_intraday = True
                         elif rt_date == last_hist_date:
+                            # 同一天：只更新 OHLCV，保留 FinLab 指標
                             price_df.loc[price_df.index[-1], "close"] = rt["price"]
                             if rt.get("high"):
                                 price_df.loc[price_df.index[-1], "high"] = rt["high"]
@@ -3716,6 +3693,10 @@ def _run_h_diagnose_bg(stock_ids):
                                 price_df.loc[price_df.index[-1], "low"] = rt["low"]
                             if rt.get("volume"):
                                 price_df.loc[price_df.index[-1], "volume"] = rt["volume"]
+                                # volume 更新後需重算 vol_ma5 / vol_ratio
+                                price_df["s_vol_ma5"] = price_df["volume"].rolling(window=5).mean().round(0)
+                                vol_ma5 = price_df["s_vol_ma5"].replace(0, np.nan)
+                                price_df["s_vol_ratio"] = (price_df["volume"] / vol_ma5).round(2)
                             is_intraday = True
 
                 enriched = compute_screener_indicators(price_df)
@@ -3723,10 +3704,6 @@ def _run_h_diagnose_bg(stock_ids):
 
                 # 取得名稱
                 name = rt.get("name", sid) if rt else sid
-                if name == sid and "stock_name" in price_df.columns:
-                    sn = price_df["stock_name"].iloc[-1]
-                    if pd.notna(sn):
-                        name = str(sn)
 
                 close_val = diag.get("summary", {}).get("close")
                 item = {
@@ -3739,29 +3716,21 @@ def _run_h_diagnose_bg(stock_ids):
                 if rt_time:
                     item["rt_time"] = rt_time
 
-                # 法人買賣超
+                # 法人買賣超（從 FinLab 快取）
                 try:
-                    inst_df = fetch_institutional_single(sid, days=1)
-                    if not inst_df.empty:
-                        latest = inst_df.iloc[-1]
-                        fb = int(latest.get("Foreign_Investor_Buy", 0))
-                        fs = int(latest.get("Foreign_Investor_Sell", 0))
-                        tb = int(latest.get("Investment_Trust_Buy", 0))
-                        ts = int(latest.get("Investment_Trust_Sell", 0))
-                        item["foreign_net"] = (fb - fs) // 1000  # 張
-                        item["trust_net"] = (tb - ts) // 1000
+                    fn, tn = finlab_fetcher.get_latest_institutional_net(sid)
+                    item["foreign_net"] = fn
+                    item["trust_net"] = tn
                 except Exception:
                     pass
 
-                # 營收年增率
+                # 營收年增率（從 FinLab 快取）
                 try:
-                    rev_df = fetch_revenue(sid)
-                    rev_summary = get_revenue_summary(rev_df)
-                    item["rev_yoy"] = rev_summary.get("年增率(%)")
+                    item["rev_yoy"] = finlab_fetcher.get_revenue_yoy(sid)
                 except Exception:
                     pass
 
-                # 基本面篩選（選股用的獲利門檻）
+                # 基本面篩選（已含 FinLab fallback）
                 try:
                     prof_pass, prof_reason = check_profitability(sid)
                     item["prof_pass"] = prof_pass
@@ -3770,23 +3739,14 @@ def _run_h_diagnose_bg(stock_ids):
                     item["prof_pass"] = None
                     item["prof_reason"] = ""
 
-                # 取 EPS 供前端顯示
+                # EPS（從 FinLab 快取）
                 try:
-                    start_eps = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
-                    df_fin = _fetch("TaiwanStockFinancialStatements", sid, start_date=start_eps)
-                    if not df_fin.empty and "type" in df_fin.columns:
-                        eps_rows = df_fin[df_fin["type"] == "EPS"].copy()
-                        if not eps_rows.empty:
-                            eps_rows["date"] = pd.to_datetime(eps_rows["date"])
-                            eps_rows = eps_rows.sort_values("date")
-                            item["latest_eps"] = float(eps_rows.iloc[-1]["value"])
-                            _eps_date = eps_rows.iloc[-1]["date"]
-                            _q = (_eps_date.month - 1) // 3 + 1
-                            item["eps_quarter"] = f"{_eps_date.year}Q{_q}"
+                    eps_val, eps_q, _ = finlab_fetcher.get_eps(sid)
+                    item["latest_eps"] = eps_val
+                    item["eps_quarter"] = eps_q or ""
                 except Exception:
                     pass
 
-                _time.sleep(0.1)
                 results.append(item)
 
             except Exception as e:
@@ -3853,12 +3813,16 @@ def api_h_diagnose_single(stock_id):
     """同步執行單股 H 策略診斷，回傳診斷結果 JSON。"""
     try:
         from screener import compute_screener_indicators
-        from data_fetcher import fetch_price, fetch_realtime_quote, _fetch, fetch_revenue
-        from fundamentals import get_revenue_summary
+        from data_fetcher import fetch_realtime_quote
         from strategies.master_chu import diagnose_h_strategy
         from strategies._helpers import check_profitability
+        import finlab_fetcher
 
-        price_df = fetch_price(stock_id)
+        # 確保 FinLab 快取已載入
+        finlab_fetcher.load_daily_cache()
+
+        # 使用 get_enriched_df 確保指標與選股器一致（FinLab TA-Lib）
+        price_df = finlab_fetcher.get_enriched_df(stock_id)
         if price_df.empty or len(price_df) < 65:
             return jsonify({"error": "歷史資料不足（需至少 65 天）"})
 
@@ -3872,6 +3836,9 @@ def api_h_diagnose_single(stock_id):
                 rt_date = pd.Timestamp(f"{rt_date_str[:4]}-{rt_date_str[4:6]}-{rt_date_str[6:8]}")
                 last_hist = price_df["date"].iloc[-1]
                 if rt_date > last_hist:
+                    # 新的一天：drop s_* 欄位後加入新列，強制重算指標
+                    s_cols = [c for c in price_df.columns if c.startswith("s_")]
+                    price_df = price_df.drop(columns=s_cols)
                     new_row = pd.DataFrame([{
                         "date": rt_date, "open": rt.get("open") or rt["price"],
                         "high": rt.get("high") or rt["price"],
@@ -3880,14 +3847,25 @@ def api_h_diagnose_single(stock_id):
                     }])
                     price_df = pd.concat([price_df, new_row], ignore_index=True)
                 elif rt_date == last_hist:
+                    # 同一天：只更新 OHLCV，保留 FinLab 指標
                     price_df.loc[price_df.index[-1], "close"] = rt["price"]
+                    if rt.get("high"):
+                        price_df.loc[price_df.index[-1], "high"] = rt["high"]
+                    if rt.get("low"):
+                        price_df.loc[price_df.index[-1], "low"] = rt["low"]
+                    if rt.get("volume"):
+                        price_df.loc[price_df.index[-1], "volume"] = rt["volume"]
+                        # volume 更新後需重算 vol_ma5 / vol_ratio
+                        price_df["s_vol_ma5"] = price_df["volume"].rolling(window=5).mean().round(0)
+                        vol_ma5 = price_df["s_vol_ma5"].replace(0, np.nan)
+                        price_df["s_vol_ratio"] = (price_df["volume"] / vol_ma5).round(2)
 
         enriched = compute_screener_indicators(price_df)
         diag = diagnose_h_strategy(enriched)
 
         name = rt.get("name", stock_id) if rt else stock_id
 
-        # 基本面
+        # 基本面（已含 FinLab fallback）
         prof_pass, prof_reason = None, ""
         try:
             prof_pass, prof_reason = check_profitability(stock_id)
@@ -3895,28 +3873,19 @@ def api_h_diagnose_single(stock_id):
         except Exception:
             pass
 
-        # 營收年增率
+        # 營收年增率（從 FinLab 快取）
         rev_yoy = None
         try:
-            rev_df = fetch_revenue(stock_id)
-            rev_summary = get_revenue_summary(rev_df)
-            rev_yoy = rev_summary.get("年增率(%)")
+            rev_yoy = finlab_fetcher.get_revenue_yoy(stock_id)
         except Exception:
             pass
 
-        # EPS
+        # EPS（從 FinLab 快取）
         latest_eps, eps_quarter = None, ""
         try:
-            start_eps = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
-            df_fin = _fetch("TaiwanStockFinancialStatements", stock_id, start_date=start_eps)
-            if not df_fin.empty and "type" in df_fin.columns:
-                eps_rows = df_fin[df_fin["type"] == "EPS"].copy()
-                if not eps_rows.empty:
-                    eps_rows["date"] = pd.to_datetime(eps_rows["date"])
-                    eps_rows = eps_rows.sort_values("date")
-                    latest_eps = float(eps_rows.iloc[-1]["value"])
-                    _d = eps_rows.iloc[-1]["date"]
-                    eps_quarter = f"{_d.year}Q{(_d.month - 1) // 3 + 1}"
+            eps_val, eps_q, _ = finlab_fetcher.get_eps(stock_id)
+            latest_eps = eps_val
+            eps_quarter = eps_q or ""
         except Exception:
             pass
 

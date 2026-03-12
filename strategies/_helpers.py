@@ -135,36 +135,70 @@ def check_profitability(stock_id: str) -> tuple:
        → 通過，標記「轉機潛力股」
 
     回傳 (pass: bool, reason: str | None)
-    """
-    from data_fetcher import _fetch, fetch_revenue
-    from fundamentals import get_revenue_summary
 
-    # ── 取得營收年增率（共用） ──
+    優先使用 FinLab 快取；若 FinLab 快取不可用則 fallback 到 FinMind。
+    """
+    # ── 嘗試從 FinLab 快取取得 ──
     rev_yoy = None
+    latest_eps = None
+    prev_eps = None
+    use_finlab = False
+
     try:
-        rev_df = fetch_revenue(stock_id)
-        rev_summary = get_revenue_summary(rev_df)
-        rev_yoy = rev_summary.get("年增率(%)")
+        import finlab_fetcher
+        if finlab_fetcher._cache:
+            # EPS
+            eps_result = finlab_fetcher.get_eps(stock_id)
+            if eps_result[0] is not None:
+                latest_eps = eps_result[0]
+                eps_list = eps_result[2]
+                if len(eps_list) >= 2:
+                    prev_eps = eps_list[-2]
+                use_finlab = True
+
+            # 營收 YoY
+            yoy_val = finlab_fetcher.get_revenue_yoy(stock_id)
+            if yoy_val is not None:
+                rev_yoy = yoy_val
     except Exception:
         pass
 
-    # ── 取得財報 EPS ──
-    start = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
-    try:
-        df_fin = _fetch("TaiwanStockFinancialStatements", stock_id, start_date=start)
-    except Exception:
-        return (True, "無法取得財報（預設通過）")
+    # ── FinLab 快取不可用 → fallback 到 FinMind ──
+    if not use_finlab:
+        from data_fetcher import _fetch, fetch_revenue
+        from fundamentals import get_revenue_summary
 
-    if df_fin.empty or "type" not in df_fin.columns:
-        return (True, "無財報資料（預設通過）")
+        # 營收年增率
+        try:
+            rev_df = fetch_revenue(stock_id)
+            rev_summary = get_revenue_summary(rev_df)
+            rev_yoy = rev_summary.get("年增率(%)")
+        except Exception:
+            pass
 
-    eps_df = df_fin[df_fin["type"] == "EPS"].copy()
-    if eps_df.empty:
+        # EPS
+        start = (datetime.today() - timedelta(days=730)).strftime("%Y-%m-%d")
+        try:
+            df_fin = _fetch("TaiwanStockFinancialStatements", stock_id, start_date=start)
+        except Exception:
+            return (True, "無法取得財報（預設通過）")
+
+        if df_fin.empty or "type" not in df_fin.columns:
+            return (True, "無財報資料（預設通過）")
+
+        eps_df = df_fin[df_fin["type"] == "EPS"].copy()
+        if eps_df.empty:
+            return (True, "無 EPS 資料（預設通過）")
+
+        eps_df["date"] = pd.to_datetime(eps_df["date"])
+        eps_df = eps_df.sort_values("date")
+        latest_eps = float(eps_df.iloc[-1]["value"])
+        if len(eps_df) >= 2:
+            prev_eps = float(eps_df.iloc[-2]["value"])
+
+    # ── 共用判斷邏輯 ──
+    if latest_eps is None:
         return (True, "無 EPS 資料（預設通過）")
-
-    eps_df["date"] = pd.to_datetime(eps_df["date"])
-    eps_df = eps_df.sort_values("date")
-    latest_eps = float(eps_df.iloc[-1]["value"])
 
     # ════ 條件 A：主力門檻 — EPS > 0 且 營收 YoY > 20% ════
     if latest_eps > 0:
@@ -175,10 +209,8 @@ def check_profitability(stock_id: str) -> tuple:
         return (False, f"EPS>0但營收YoY={rev_yoy:+.1f}%未達20%")
 
     # ════ 條件 B：轉機門檻 — EPS ≤ 0 + 虧損收斂 + 營收 YoY > 40% ════
-    if len(eps_df) < 2:
+    if prev_eps is None:
         return (False, "EPS≤0 且歷史資料不足")
-
-    prev_eps = float(eps_df.iloc[-2]["value"])
 
     # B1. 虧損收斂：本季 EPS > 上季 EPS
     if latest_eps <= prev_eps:

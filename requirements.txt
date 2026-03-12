@@ -8,3 +8,6 @@ scipy>=1.7.0
 lxml>=4.9.0
 finlab>=1.5.0
 tqdm>=4.60.0
+# TA-Lib (需先安裝 C library: brew install ta-lib / apt-get install ta-lib)
+# FinLab data.indicator() 需要 TA-Lib 引擎
+TA-Lib>=0.4.0
