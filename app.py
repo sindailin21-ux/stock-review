@@ -434,11 +434,21 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
         # 名稱對照表（從 FinLab 快取無名稱，後續由 industry_map 或即時報價補充）
         name_map = {}
 
-        # ── 產業分類 ──
-        _screener_status["current"] = "載入產業分類..."
-        industry_map = fetch_industry_map()
+        # ── 產業分類（背景載入，與掃描並行）──
+        _screener_status["current"] = "啟動產業分類載入..."
+        _ind_map_result = {"data": {}}
 
-        # ── Phase 3: 策略掃描 ──
+        def _load_industry():
+            try:
+                _ind_map_result["data"] = fetch_industry_map()
+            except Exception:
+                _ind_map_result["data"] = {}
+
+        import threading as _thr
+        ind_thread = _thr.Thread(target=_load_industry, daemon=True)
+        ind_thread.start()
+
+        # ── Phase 3: 策略掃描（與產業分類並行）──
         _screener_status["total"] = len(final_ids)
         _screener_status["current"] = f"策略掃描中 (0/{len(final_ids)})"
 
@@ -463,8 +473,14 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
             fetch_institutional_fn=_fetch_inst_finlab,
             get_name_fn=_get_name_cached,
             cancel_flag={"status_ref": _screener_status},
-            industry_map=industry_map,
+            industry_map={},  # 先用空 map，掃描不依賴產業
         )
+
+        # 等待產業分類完成，補回 industry 欄位
+        ind_thread.join(timeout=10)
+        industry_map = _ind_map_result["data"]
+        for r in rows:
+            r["industry"] = industry_map.get(r["stock_id"], r.get("industry", ""))
 
         # ── Phase 4: 補充法人買賣超 + 營收年增 + 基本面 ──
         _screener_status["current"] = f"補充基本面資料（{len(rows)} 檔）"

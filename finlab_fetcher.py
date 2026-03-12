@@ -194,6 +194,8 @@ def get_enriched_df(stock_id: str, months: int = 5) -> pd.DataFrame:
     """
     從快取組裝單股 DataFrame，含 OHLCV + 全部 s_* 指標欄位。
     回傳格式與 compute_screener_indicators() 輸出完全相同，策略可直接使用。
+
+    優化版：所有寬表共用同一個日期 index，直接 iloc 取值，無需 reindex。
     """
     if not _cache:
         return pd.DataFrame()
@@ -203,49 +205,34 @@ def get_enriched_df(stock_id: str, months: int = 5) -> pd.DataFrame:
     if close_wide is None or sid not in close_wide.columns:
         return pd.DataFrame()
 
-    # 多取 100 天給長週期指標暖機
-    n_rows = months * 30 + 100
+    n_rows = min(months * 30 + 100, len(close_wide))
 
-    # 取可用範圍
-    total_rows = len(close_wide)
-    n_rows = min(n_rows, total_rows)
+    # 所有寬表共用 index，直接用 iloc slice
+    idx = slice(-n_rows, None)
 
-    # 建立日期 index
-    dates = close_wide.index[-n_rows:]
-
-    # 組裝 OHLCV — 先取各欄位 Series
-    price_cols = {}
+    # 一次建立所有欄位的 dict（OHLCV + 指標）
+    data = {"date": close_wide.index[idx]}
     for key, col_name in [("open", "open"), ("high", "high"),
                            ("low", "low"), ("close", "close"),
                            ("volume", "volume")]:
         wide = _cache.get(key)
         if wide is not None and sid in wide.columns:
-            price_cols[col_name] = wide[sid].iloc[-n_rows:].values
+            data[col_name] = wide[sid].values[idx]
         else:
-            return pd.DataFrame()  # 缺少必要欄位
+            return pd.DataFrame()
 
-    df = pd.DataFrame(price_cols, index=dates)
-    df.index.name = "date"
-    df = df.reset_index()
+    # 指標欄位 — 直接 iloc，不需 reindex（同一個日期軸）
+    for cache_key, col_name in _INDICATOR_MAP.items():
+        wide = _cache.get(cache_key)
+        if wide is not None and sid in wide.columns:
+            data[col_name] = wide[sid].values[idx]
 
-    # 移除 close 為 NaN 的列（非交易日）
+    df = pd.DataFrame(data)
     df = df.dropna(subset=["close"]).reset_index(drop=True)
     if df.empty or len(df) < 20:
         return df
 
-    # ── 映射 FinLab 指標到 s_* 欄位 ──
-    # 需要重新對齊：先建立日期索引，再 merge
-    df_dates = pd.to_datetime(df["date"])
-
-    for cache_key, col_name in _INDICATOR_MAP.items():
-        wide = _cache.get(cache_key)
-        if wide is not None and sid in wide.columns:
-            indicator_series = wide[sid]
-            # 用日期對齊
-            aligned = indicator_series.reindex(pd.to_datetime(df["date"]))
-            df[col_name] = aligned.values
-
-    # ── vol_ma5 / vol_ratio 本地計算 ──
+    # vol_ma5 / vol_ratio（本地計算，只需 2 行）
     df["s_vol_ma5"] = df["volume"].rolling(window=5).mean().round(0)
     vol_ma5 = df["s_vol_ma5"].replace(0, np.nan)
     df["s_vol_ratio"] = (df["volume"] / vol_ma5).round(2)
