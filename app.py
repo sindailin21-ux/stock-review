@@ -431,18 +431,22 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
             _screener_status["error"] = "過濾後無符合條件的股票"
             return
 
-        # 名稱對照表（從 FinLab 快取無名稱，後續由 industry_map 或即時報價補充）
-        name_map = {}
+        # 名稱對照表（由 fetch_industry_map 順便填入 _name_cache）
+        # 先嘗試從上次快取取得（fetch_industry_map 有 1 小時快取）
+        from data_fetcher import fetch_name_map as _fetch_name_map
+        name_map = _fetch_name_map()  # 若之前已呼叫過，有快取直接拿
 
         # ── 產業分類（背景載入，與掃描並行）──
         _screener_status["current"] = "啟動產業分類載入..."
-        _ind_map_result = {"data": {}}
+        _ind_map_result = {"data": {}, "names": {}}
 
         def _load_industry():
             try:
                 _ind_map_result["data"] = fetch_industry_map()
+                _ind_map_result["names"] = _fetch_name_map()
             except Exception:
                 _ind_map_result["data"] = {}
+                _ind_map_result["names"] = {}
 
         import threading as _thr
         ind_thread = _thr.Thread(target=_load_industry, daemon=True)
@@ -463,7 +467,11 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
         def _get_name_cached(sid, price_df):
             if sid in name_map:
                 return name_map[sid]
-            return _get_stock_name(sid, price_df)
+            # 掃描期間 _load_industry 可能已完成，從 _name_cache 即時拿
+            from data_fetcher import _name_cache
+            if sid in _name_cache:
+                return _name_cache[sid]
+            return sid  # 不再呼叫 FinMind API，避免慢速
 
         rows = scan_stocks(
             stock_ids=final_ids,
@@ -476,11 +484,15 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
             industry_map={},  # 先用空 map，掃描不依賴產業
         )
 
-        # 等待產業分類完成，補回 industry 欄位
+        # 等待產業分類完成，補回 industry + name 欄位
         ind_thread.join(timeout=10)
         industry_map = _ind_map_result["data"]
+        name_map_from_isin = _ind_map_result["names"]
         for r in rows:
             r["industry"] = industry_map.get(r["stock_id"], r.get("industry", ""))
+            # 補回股票名稱（若掃描時取不到名稱）
+            if r.get("name", "") == r["stock_id"] and r["stock_id"] in name_map_from_isin:
+                r["name"] = name_map_from_isin[r["stock_id"]]
 
         # ── Phase 4: 補充法人買賣超 + 營收年增 + 基本面 ──
         _screener_status["current"] = f"補充基本面資料（{len(rows)} 檔）"
@@ -3710,8 +3722,11 @@ def _run_h_diagnose_bg(stock_ids):
                 enriched = compute_screener_indicators(price_df)
                 diag = diagnose_h_strategy(enriched)
 
-                # 取得名稱
+                # 取得名稱（即時報價 → ISIN名稱快取 → fallback sid）
                 name = rt.get("name", sid) if rt else sid
+                if name == sid:
+                    from data_fetcher import _name_cache as _nc
+                    name = _nc.get(sid, sid)
 
                 close_val = diag.get("summary", {}).get("close")
                 item = {
@@ -3872,6 +3887,9 @@ def api_h_diagnose_single(stock_id):
         diag = diagnose_h_strategy(enriched)
 
         name = rt.get("name", stock_id) if rt else stock_id
+        if name == stock_id:
+            from data_fetcher import _name_cache as _nc2
+            name = _nc2.get(stock_id, stock_id)
 
         # 基本面（已含 FinLab fallback）
         prof_pass, prof_reason = None, ""
