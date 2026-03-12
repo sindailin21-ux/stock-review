@@ -342,9 +342,9 @@ def _run_batch(portfolio_df: pd.DataFrame, force: bool, today: str):
 
 def _run_screener(strategies: list, target_date: str = None, force_refresh: bool = False):
     """
-    全自動選股流程（FinLab VIP 批次資料 + 每日快取 + 指標預計算）：
-    Phase 1: TWSE/TPEX 全市場日行情 → 流動性過濾
-    Phase 2: FinLab 每日快取（全市場價量 + 指標 + 法人 + 營收 + EPS）
+    全自動選股流程（100% FinLab VIP，不依賴 TWSE/TPEX 公開 API）：
+    Phase 1: FinLab 每日快取（全市場價量 + 指標 + 法人 + 營收 + EPS）
+    Phase 2: 流動性過濾（成交額/量）
     Phase 3: 逐股跑策略掃描
     Phase 4: 補充基本面資料
     Phase 5: Watchlist 追蹤
@@ -355,66 +355,15 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
 
     import os
 
-    from data_fetcher import fetch_market_daily, fetch_industry_map
+    from data_fetcher import fetch_industry_map
     from screener import scan_stocks
     import finlab_fetcher
 
     try:
-        # ── Phase 1: 全市場行情 + 流動性過濾 ──
-        _screener_status["current"] = "載入全市場行情（TWSE + TPEX）..."
-        market_df = fetch_market_daily(target_date)
-        if _screener_status["cancel"]:
-            _screener_status["error"] = "已取消"
-            return
-        if market_df.empty:
-            _screener_status["error"] = "無法載入市場日行情（可能為非交易日）"
-            return
-
-        # 確保數值欄位
-        for col in ["Trading_Volume", "Trading_Money"]:
-            if col in market_df.columns:
-                market_df[col] = pd.to_numeric(market_df[col], errors="coerce").fillna(0)
-
-        # 只保留一般股票（4位數字代號 1xxx-9xxx），排除 ETF(00xx)、權證等
-        stock_mask = market_df["stock_id"].str.match(r"^[1-9]\d{3}$")
-        market_df = market_df[stock_mask].copy()
-        total_stocks = len(market_df)
-        print(f"📋 一般股票共 {total_stocks} 檔")
-
-        _screener_status["current"] = "流動性過濾（成交額/量）..."
-
-        # 過濾：成交金額 > 1 億 OR 成交量 > 1,000,000 股（= 1000 張）
-        vol_col = "Trading_Volume" if "Trading_Volume" in market_df.columns else None
-        money_col = "Trading_Money" if "Trading_Money" in market_df.columns else None
-
-        if vol_col and money_col:
-            mask = (market_df[money_col] > 100_000_000) | (market_df[vol_col] > 1_000_000)
-        elif vol_col:
-            mask = market_df[vol_col] > 1_000_000
-        elif money_col:
-            mask = market_df[money_col] > 100_000_000
-        else:
-            _screener_status["error"] = "行情資料缺少成交量/金額欄位"
-            return
-
-        final_ids = sorted(market_df[mask]["stock_id"].tolist())
-        print(f"💧 流動性過濾後 {len(final_ids)} 檔（原 {total_stocks} 檔）")
-
-        if not final_ids:
-            _screener_status["error"] = "過濾後無符合條件的股票"
-            return
-
         from datetime import datetime as _dt
         cache_date = target_date or _dt.today().strftime("%Y-%m-%d")
 
-        # 建立名稱對照表
-        name_map = dict(zip(market_df["stock_id"], market_df["name"])) if "name" in market_df.columns else {}
-
-        # ── Phase 1.5: 產業分類 ──
-        _screener_status["current"] = "載入產業分類..."
-        industry_map = fetch_industry_map()
-
-        # ── Phase 2: FinLab 每日快取（全市場批次載入）──
+        # ── Phase 1: FinLab 每日快取（全市場批次載入）──
         if _screener_status["cancel"]:
             _screener_status["error"] = "已取消"
             return
@@ -422,7 +371,6 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
         # 強制重抓時清除 FinLab 快取
         if force_refresh:
             finlab_fetcher.reset_cache()
-            # 同時刪除磁碟快取
             pkl_path = os.path.join(finlab_fetcher.CACHE_DIR, f"finlab_{cache_date}.pkl")
             if os.path.exists(pkl_path):
                 try:
@@ -445,6 +393,50 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
         if _screener_status["cancel"]:
             _screener_status["error"] = "已取消"
             return
+
+        # ── Phase 2: 流動性過濾（從 FinLab 快取）──
+        _screener_status["current"] = "流動性過濾（成交額/量）..."
+        close_wide = finlab_fetcher._cache.get("close")
+        volume_wide = finlab_fetcher._cache.get("volume")
+        if close_wide is None or volume_wide is None:
+            _screener_status["error"] = "FinLab 快取載入失敗"
+            return
+
+        # 取最後一天的 close / volume
+        latest_close = close_wide.iloc[-1]
+        latest_volume = volume_wide.iloc[-1]
+
+        # 建立 market_df
+        market_df = pd.DataFrame({
+            "stock_id": latest_close.index.astype(str),
+            "close": latest_close.values,
+            "Trading_Volume": latest_volume.values,
+        })
+        market_df["Trading_Money"] = market_df["close"] * market_df["Trading_Volume"]
+
+        # 只保留一般股票（4位數字代號 1xxx-9xxx），排除 ETF(00xx)、權證等
+        stock_mask = market_df["stock_id"].str.match(r"^[1-9]\d{3}$")
+        market_df = market_df[stock_mask].copy()
+        # 移除 close 為 NaN 的（非交易股票）
+        market_df = market_df.dropna(subset=["close"])
+        total_stocks = len(market_df)
+        print(f"📋 一般股票共 {total_stocks} 檔（含上市+上櫃）")
+
+        # 過濾：成交金額 > 1 億 OR 成交量 > 1,000,000 股（= 1000 張）
+        mask = (market_df["Trading_Money"] > 100_000_000) | (market_df["Trading_Volume"] > 1_000_000)
+        final_ids = sorted(market_df[mask]["stock_id"].tolist())
+        print(f"💧 流動性過濾後 {len(final_ids)} 檔（原 {total_stocks} 檔）")
+
+        if not final_ids:
+            _screener_status["error"] = "過濾後無符合條件的股票"
+            return
+
+        # 名稱對照表（從 FinLab 快取無名稱，後續由 industry_map 或即時報價補充）
+        name_map = {}
+
+        # ── 產業分類 ──
+        _screener_status["current"] = "載入產業分類..."
+        industry_map = fetch_industry_map()
 
         # ── Phase 3: 策略掃描 ──
         _screener_status["total"] = len(final_ids)
