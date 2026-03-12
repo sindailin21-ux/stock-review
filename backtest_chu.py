@@ -164,6 +164,8 @@ def parse_args():
                         help="ADX 計算天期（預設 14，可試 7/10/12）")
     parser.add_argument("--best", action="store_true",
                         help="一鍵套用最佳策略（ADX趨勢+放寬進場+RSI+停損6%%+停利15%%+持有5天）")
+    parser.add_argument("--rev-yoy", type=float, default=0,
+                        help="營收 YoY 門檻 (default: 0 = 任何正成長，0.2 = 20%%)")
     return parser.parse_args()
 
 
@@ -793,12 +795,15 @@ def run_backtest(args):
             rev_m = rev_m[rev_m.columns.intersection(close.columns)]
             rev_yoy = rev_m / rev_m.shift(12) - 1
             rev_yoy_daily = rev_yoy.reindex(close.index, method="ffill")
-            cond_rev = rev_yoy_daily > 0
+            rev_yoy_threshold = getattr(args, "rev_yoy", 0)
+            cond_rev = rev_yoy_daily > rev_yoy_threshold
 
             fundamental_filter = (cond_eps & cond_rev).reindex(
                 index=close.index, columns=close.columns
             ).fillna(False)
 
+            if rev_yoy_threshold > 0:
+                print(f"  📊 營收 YoY 門檻：> {rev_yoy_threshold*100:.0f}%")
             pass_pct = fundamental_filter.sum().sum() / fundamental_filter.size * 100
             print(f"   基本面通過率：{pass_pct:.1f}%（EPS>0 且 營收YoY>0）")
         except Exception as e:
@@ -1449,8 +1454,9 @@ def run_optimize(args):
         except Exception:
             market_filter = None
 
-    # ── 基本面濾網 ──
+    # ── 基本面濾網（多門檻版本）──
     fundamental_filter = None
+    fund_filters = {}  # {threshold: DataFrame} — 供 YoY 門檻掃描用
     if not args.no_fundamental:
         try:
             eps_q = data.get("financial_statement:每股盈餘")
@@ -1461,9 +1467,15 @@ def run_optimize(args):
             rev_m = rev_m[rev_m.columns.intersection(close.columns)]
             rev_yoy = rev_m / rev_m.shift(12) - 1
             rev_yoy_daily = rev_yoy.reindex(close.index, method="ffill")
-            cond_rev = rev_yoy_daily > 0
-            fundamental_filter = (cond_eps & cond_rev).reindex(
-                index=close.index, columns=close.columns).fillna(False)
+
+            # 預計算多組 YoY 門檻的 fundamental_filter
+            for thr in [0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30]:
+                cond_rev = rev_yoy_daily > thr
+                fund_filters[thr] = (cond_eps & cond_rev).reindex(
+                    index=close.index, columns=close.columns).fillna(False)
+            # 預設 0% 門檻（向下相容）
+            fundamental_filter = fund_filters[0]
+            print(f"  📊 基本面濾網：已預計算 {len(fund_filters)} 組 YoY 門檻")
         except Exception:
             fundamental_filter = None
 
@@ -1686,6 +1698,17 @@ def run_optimize(args):
          "nstocks": 15},
     ]
 
+    # === H. 營收 YoY 門檻掃描（基於 C1 冠軍配置）===
+    if fund_filters:
+        for thr_pct in [0, 5, 10, 15, 20, 25, 30]:
+            configs.append({
+                "name": f"H:C1+YoY>{thr_pct}%",
+                "relax": True, "no_ma60": False, "swing": adx_trend,
+                "min_hold": 5, "trail": 0.15, "sl": 0.08, "full_invest": False,
+                "exit_ma": -2, "rsi": True, "rs": False, "rank_mode": "vol",
+                "fund_filter_key": thr_pct / 100,
+            })
+
     # ── 測試所有配置 ──
     results = []
     for cfg in configs:
@@ -1696,7 +1719,12 @@ def run_optimize(args):
 
         # 選擇大盤/基本面濾鏡
         cfg_mkt = None if cfg.get("no_mkt") else market_filter
-        cfg_fund = None if cfg.get("no_fund") else fundamental_filter
+        if cfg.get("no_fund"):
+            cfg_fund = None
+        elif cfg.get("fund_filter_key") is not None and fund_filters:
+            cfg_fund = fund_filters.get(cfg["fund_filter_key"], fundamental_filter)
+        else:
+            cfg_fund = fundamental_filter
 
         # 建構進場訊號
         entries = build_entry_signals(

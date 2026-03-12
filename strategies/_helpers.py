@@ -128,11 +128,14 @@ def check_profitability(stock_id: str) -> tuple:
     """
     精煉型基本面濾網（全策略通用）。
 
-    條件 A（主力門檻）：最新季 EPS > 0 且 營收 YoY > 20%。
+    條件 A（主力門檻）：最新季 EPS > 0 且 營收 YoY > config 門檻（預設 0%）。
     條件 B（轉機門檻）：最新季 EPS < 0，但同時滿足：
        B1. 虧損收斂：本季 EPS > 上季 EPS
        B2. 營收 YoY > 40%
        → 通過，標記「轉機潛力股」
+
+    營收 YoY 門檻由 config.PROFITABILITY_REV_YOY_THRESHOLD 控制（%）。
+    回測結論：0% 門檻（任何正成長）在風險調整後最優。
 
     回傳 (pass: bool, reason: str | None)
 
@@ -200,13 +203,15 @@ def check_profitability(stock_id: str) -> tuple:
     if latest_eps is None:
         return (True, "無 EPS 資料（預設通過）")
 
-    # ════ 條件 A：主力門檻 — EPS > 0 且 營收 YoY > 20% ════
+    # ════ 條件 A：主力門檻 — EPS > 0 且 營收 YoY > 門檻 ════
+    from config import PROFITABILITY_REV_YOY_THRESHOLD
+    yoy_threshold = PROFITABILITY_REV_YOY_THRESHOLD  # 預設 0（%）
     if latest_eps > 0:
         if rev_yoy is None:
             return (True, "獲利股")
-        if rev_yoy > 20:
+        if rev_yoy > yoy_threshold:
             return (True, "獲利股")
-        return (False, f"EPS>0但營收YoY={rev_yoy:+.1f}%未達20%")
+        return (False, f"EPS>0但營收YoY={rev_yoy:+.1f}%未達{yoy_threshold}%")
 
     # ════ 條件 B：轉機門檻 — EPS ≤ 0 + 虧損收斂 + 營收 YoY > 40% ════
     if prev_eps is None:

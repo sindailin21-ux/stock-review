@@ -27,6 +27,12 @@ MACD_SIGNAL = 9
 RSI_PERIOD  = 14
 DATA_DAYS   = 120
 
+# ── 基本面篩選門檻 ──────────────────────────────────────────
+# 營收 YoY 門檻（%）：回測最佳值 0%（任何正成長）
+# 回測期間 2021~2026，YoY>0% 年化+20.4% / 勝率41.6% / MDD 14.6%
+# 原先 20% 門檻：年化+19.9% / 勝率35.7% / MDD 21.1%
+PROFITABILITY_REV_YOY_THRESHOLD = 0
+
 # ── 報告輸出（本機用，Zeabur 不會寫磁碟） ──────────────────
 REPORTS_DIR    = "reports"
 PORTFOLIO_FILE = "portfolio.csv"
