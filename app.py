@@ -624,14 +624,14 @@ def _run_monitor(stock_ids: list):
 
 def _run_intraday_scan():
     """
-    盤中即時掃描：用即時報價 + 歷史快取跑 Strategy H。
-    1. 讀取今日已建立的歷史快取（price_cache）
-    2. 批次抓取即時報價，替換/追加今日 OHLCV
-    3. 只跑 Strategy H（進場訊號）
-    4. 回傳符合條件的股票 + 進出場價位
+    盤中即時掃描：用即時報價 + FinLab 歷史快取跑 Strategy H。
+    1. 載入 FinLab 快取（全市場價量資料）
+    2. 流動性過濾（與盤後掃描相同邏輯）
+    3. 批次抓取即時報價，替換/追加今日 OHLCV
+    4. 只跑 Strategy H（進場訊號）
+    5. 回傳符合條件的股票 + 進出場價位
     """
     global _intraday_status
-    import os, pickle
 
     try:
         _intraday_status["running"] = True
@@ -642,6 +642,7 @@ def _run_intraday_scan():
         from data_fetcher import fetch_realtime_quotes_batch
         from screener import compute_screener_indicators
         from strategies import discover_strategies, get_strategy
+        import finlab_fetcher
 
         discover_strategies()
         h_info = get_strategy("H")
@@ -649,61 +650,56 @@ def _run_intraday_scan():
             _intraday_status["error"] = "Strategy H 未註冊"
             return
 
-        # ── 1. 載入歷史快取 ──
-        _intraday_status["current"] = "載入歷史資料快取..."
-        cache_dir = os.path.join(os.path.dirname(__file__), ".cache")
-        today_str = datetime.now().strftime("%Y%m%d")
+        # ── 1. 載入 FinLab 快取 ──
+        _intraday_status["current"] = "載入 FinLab 快取..."
+        finlab_fetcher.load_daily_cache(status=_intraday_status)
 
-        # 找最新的快取檔
-        cache_file = None
-        if os.path.exists(cache_dir):
-            caches = sorted(
-                [f for f in os.listdir(cache_dir) if f.startswith("scan_") and f.endswith(".pkl")],
-                reverse=True
-            )
-            if caches:
-                cache_file = os.path.join(cache_dir, caches[0])
-
-        if not cache_file or not os.path.exists(cache_file):
-            _intraday_status["error"] = "請先執行一次盤後掃描（建立歷史資料快取）"
+        close_wide = finlab_fetcher._cache.get("close")
+        volume_wide = finlab_fetcher._cache.get("volume")
+        if close_wide is None or volume_wide is None:
+            _intraday_status["error"] = "FinLab 快取載入失敗"
             return
 
-        with open(cache_file, "rb") as f:
-            cached = pickle.load(f)
-        price_cache = cached.get("price_cache", {})
+        # ── 2. 流動性過濾（與盤後掃描相同） ──
+        _intraday_status["current"] = "流動性過濾..."
+        latest_close = close_wide.iloc[-1]
+        latest_volume = volume_wide.iloc[-1]
+        market_df = pd.DataFrame({
+            "stock_id": latest_close.index.astype(str),
+            "close": latest_close.values,
+            "Trading_Volume": latest_volume.values,
+        })
+        market_df["Trading_Money"] = market_df["close"] * market_df["Trading_Volume"]
+        stock_mask = market_df["stock_id"].str.match(r"^[1-9]\d{3}$")
+        market_df = market_df[stock_mask].copy()
+        market_df = market_df.dropna(subset=["close"])
 
-        if not price_cache:
-            _intraday_status["error"] = "快取中無歷史行情資料"
+        mask = (market_df["Trading_Money"] > 100_000_000) | (market_df["Trading_Volume"] > 1_000_000)
+        stock_ids = sorted(market_df[mask]["stock_id"].tolist())
+
+        if not stock_ids:
+            _intraday_status["error"] = "過濾後無符合條件的股票"
             return
 
-        stock_ids = list(price_cache.keys())
         _intraday_status["total"] = len(stock_ids)
         print(f"📡 盤中掃描：{len(stock_ids)} 檔股票")
 
-        # ── 2. 批次抓即時報價 ──
+        # ── 3. 產業分類 + 交易所對照（供即時報價分流） ──
+        _intraday_status["current"] = "載入產業分類..."
+        from data_fetcher import fetch_industry_map, fetch_exchange_map
+        industry_map = fetch_industry_map()
+        exchange_map = fetch_exchange_map()  # sid → 'tse'/'otc'
+
+        # ── 4. 批次抓即時報價（依交易所分流，避免重試） ──
         _intraday_status["current"] = f"抓取即時報價（{len(stock_ids)} 檔）..."
-
-        # 建立 exchange_map
-        exchange_map = {}
-        for sid, df in price_cache.items():
-            # 猜測交易所：5開頭多為 OTC
-            if sid.startswith(("3", "4", "5", "6", "7", "8")):
-                exchange_map[sid] = "tpex"  # 嘗試 OTC 優先
-            else:
-                exchange_map[sid] = "twse"
-
-        rt_quotes = fetch_realtime_quotes_batch(stock_ids, exchange_map={}, batch_size=50)
+        rt_quotes = fetch_realtime_quotes_batch(stock_ids, exchange_map=exchange_map, batch_size=50)
         print(f"   ✅ 取得 {len(rt_quotes)} 檔即時報價")
 
         if not rt_quotes:
             _intraday_status["error"] = "無法取得即時報價（可能非交易時間）"
             return
 
-        # ── 3. 產業分類 ──
-        from data_fetcher import fetch_industry_map
-        industry_map = fetch_industry_map()
-
-        # ── 4. 逐股更新即時資料 + 跑 Strategy H ──
+        # ── 5. 逐股更新即時資料 + 跑 Strategy H ──
         _intraday_status["current"] = "即時策略掃描中..."
         results = []
         from strategies._helpers import check_profitability
@@ -714,7 +710,7 @@ def _run_intraday_scan():
             if sid not in rt_quotes:
                 continue
 
-            hist_df = price_cache[sid]
+            hist_df = finlab_fetcher.get_enriched_df(sid)
             if hist_df.empty or len(hist_df) < 65:
                 continue
 
@@ -736,6 +732,9 @@ def _run_intraday_scan():
 
             # 追加或替換今日即時資料
             if rt_date and rt_date > last_hist_date:
+                # drop s_* 欄位後加入新列，強制重算指標
+                s_cols = [c for c in hist_df.columns if c.startswith("s_")]
+                hist_df = hist_df.drop(columns=s_cols)
                 new_row = pd.DataFrame([{
                     "date": rt_date,
                     "open": rt.get("open") or rt["price"],
@@ -754,6 +753,9 @@ def _run_intraday_scan():
                     hist_df.loc[idx, "low"] = min(hist_df.loc[idx, "low"], rt["low"])
                 if rt.get("volume"):
                     hist_df.loc[idx, "volume"] = rt["volume"]
+                # OHLCV 已更新，drop s_* 強制重算指標
+                s_cols = [c for c in hist_df.columns if c.startswith("s_")]
+                hist_df = hist_df.drop(columns=s_cols)
 
             # 計算指標 + 跑 Strategy H
             try:
@@ -1738,7 +1740,7 @@ function openReport(sid, name, industry, evt){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({stock_id:sid, name:name, industry:industry})
   })
-  .then(function(r){return r.json();})
+  .then(function(r){if(!r.ok)throw new Error('伺服器錯誤 ('+r.status+')');return r.json();})
   .then(function(d){
     if(d.error){
       content.innerHTML='<div class="modal-loading" style="color:var(--red);">❌ '+d.error+'</div>';
@@ -1748,7 +1750,7 @@ function openReport(sid, name, industry, evt){
     _renderReport(d);
   })
   .catch(function(e){
-    content.innerHTML='<div class="modal-loading" style="color:var(--red);">❌ 報告生成失敗：'+e+'</div>';
+    content.innerHTML='<div class="modal-loading" style="color:var(--red);">❌ 報告生成失敗：'+(e.message||e)+'</div>';
   });
 }
 
@@ -2842,7 +2844,7 @@ function openReport(sid, name, industry, evt){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({stock_id:sid, name:name, industry:industry})
   })
-  .then(function(r){return r.json();})
+  .then(function(r){if(!r.ok)throw new Error('伺服器錯誤 ('+r.status+')');return r.json();})
   .then(function(d){
     if(d.error){
       content.innerHTML='<div class="modal-loading" style="color:var(--red);">❌ '+d.error+'</div>';
@@ -2852,7 +2854,7 @@ function openReport(sid, name, industry, evt){
     _renderReport(d);
   })
   .catch(function(e){
-    content.innerHTML='<div class="modal-loading" style="color:var(--red);">❌ 報告生成失敗：'+e+'</div>';
+    content.innerHTML='<div class="modal-loading" style="color:var(--red);">❌ 報告生成失敗：'+(e.message||e)+'</div>';
   });
 }
 
@@ -2881,20 +2883,37 @@ function closeReportModal(evt){
 }
 
 // ── H 診斷 Pop-out ──
+var _hDiagTimer=null;
 function openHDiag(stockId){
   var modal=document.getElementById('hDiagModal');
   var content=document.getElementById('hDiagContent');
   content.innerHTML='<div class="modal-loading"><div class="spinner"></div><br>H 策略診斷中⋯</div>';
   modal.classList.add('active');
   document.body.style.overflow='hidden';
-  fetch('/api/h-diagnose/single/'+stockId)
-    .then(function(res){return res.json();})
+  if(_hDiagTimer){clearInterval(_hDiagTimer);_hDiagTimer=null;}
+  fetch('/api/h-diagnose/single/'+stockId,{method:'POST'})
+    .then(function(r){if(!r.ok)throw new Error('伺服器錯誤 ('+r.status+')');return r.json();})
     .then(function(d){
       if(d.error){content.innerHTML='<div style="padding:20px;color:var(--red);">❌ '+d.error+'</div>';return;}
-      content.innerHTML=renderHDiagContent(d);
+      _hDiagTimer=setInterval(function(){
+        fetch('/api/h-diagnose/single-status/'+stockId)
+          .then(function(r){return r.json();})
+          .then(function(s){
+            if(s.error){
+              clearInterval(_hDiagTimer);_hDiagTimer=null;
+              content.innerHTML='<div style="padding:20px;color:var(--red);">❌ '+s.error+'</div>';
+              return;
+            }
+            if(s.current)content.querySelector('.modal-loading').innerHTML='<div class="spinner"></div><br>'+s.current;
+            if(s.done&&s.result){
+              clearInterval(_hDiagTimer);_hDiagTimer=null;
+              content.innerHTML=renderHDiagContent(s.result);
+            }
+          }).catch(function(){});
+      },1500);
     })
     .catch(function(err){
-      content.innerHTML='<div style="padding:20px;color:var(--red);">❌ 請求失敗：'+err+'</div>';
+      content.innerHTML='<div style="padding:20px;color:var(--red);">❌ 請求失敗：'+(err.message||err)+'</div>';
     });
 }
 
@@ -2980,6 +2999,7 @@ function renderHDiagContent(r){
 
 function closeHDiagModal(evt){
   if(!evt||evt.target.classList.contains('modal-overlay')){
+    if(_hDiagTimer){clearInterval(_hDiagTimer);_hDiagTimer=null;}
     document.getElementById('hDiagModal').classList.remove('active');
     document.body.style.overflow='';
   }
@@ -3523,7 +3543,7 @@ def _run_chu_review_bg(stock_ids):
                             price_df = pd.concat([price_df, new_row], ignore_index=True)
                             is_intraday = True
                         elif rt_date == last_hist_date:
-                            # 同一天：只更新 OHLCV，保留 FinLab 指標
+                            # 同一天：更新 OHLCV，drop s_* 強制重算指標
                             price_df.loc[price_df.index[-1], "close"] = rt["price"]
                             if rt.get("high"):
                                 price_df.loc[price_df.index[-1], "high"] = rt["high"]
@@ -3531,10 +3551,8 @@ def _run_chu_review_bg(stock_ids):
                                 price_df.loc[price_df.index[-1], "low"] = rt["low"]
                             if rt.get("volume"):
                                 price_df.loc[price_df.index[-1], "volume"] = rt["volume"]
-                                # volume 更新後需重算 vol_ma5 / vol_ratio
-                                price_df["s_vol_ma5"] = price_df["volume"].rolling(window=5).mean().round(0)
-                                vol_ma5 = price_df["s_vol_ma5"].replace(0, np.nan)
-                                price_df["s_vol_ratio"] = (price_df["volume"] / vol_ma5).round(2)
+                            s_cols = [c for c in price_df.columns if c.startswith("s_")]
+                            price_df = price_df.drop(columns=s_cols)
                             is_intraday = True
 
                 enriched = compute_screener_indicators(price_df)
@@ -3705,7 +3723,7 @@ def _run_h_diagnose_bg(stock_ids):
                             need_recompute = True
                             is_intraday = True
                         elif rt_date == last_hist_date:
-                            # 同一天：只更新 OHLCV，保留 FinLab 指標
+                            # 同一天：更新 OHLCV，drop s_* 強制重算指標
                             price_df.loc[price_df.index[-1], "close"] = rt["price"]
                             if rt.get("high"):
                                 price_df.loc[price_df.index[-1], "high"] = rt["high"]
@@ -3713,10 +3731,8 @@ def _run_h_diagnose_bg(stock_ids):
                                 price_df.loc[price_df.index[-1], "low"] = rt["low"]
                             if rt.get("volume"):
                                 price_df.loc[price_df.index[-1], "volume"] = rt["volume"]
-                                # volume 更新後需重算 vol_ma5 / vol_ratio
-                                price_df["s_vol_ma5"] = price_df["volume"].rolling(window=5).mean().round(0)
-                                vol_ma5 = price_df["s_vol_ma5"].replace(0, np.nan)
-                                price_df["s_vol_ratio"] = (price_df["volume"] / vol_ma5).round(2)
+                            s_cols = [c for c in price_df.columns if c.startswith("s_")]
+                            price_df = price_df.drop(columns=s_cols)
                             is_intraday = True
 
                 enriched = compute_screener_indicators(price_df)
@@ -3830,10 +3846,13 @@ def api_h_diagnose_status():
     })
 
 
-# ── 單股 H 策略即時診斷 API（選股頁用） ──
-@app.route("/api/h-diagnose/single/<stock_id>")
-def api_h_diagnose_single(stock_id):
-    """同步執行單股 H 策略診斷，回傳診斷結果 JSON。"""
+# ── 單股 H 策略即時診斷 API（選股頁用，非同步） ──
+_h_single_status = {}  # {stock_id: {done, error, current, result}}
+
+
+def _run_h_single_bg(stock_id):
+    """背景線程執行單股 H 策略診斷，避免 gunicorn timeout。"""
+    global _h_single_status
     try:
         from screener import compute_screener_indicators
         from data_fetcher import fetch_realtime_quote
@@ -3841,15 +3860,17 @@ def api_h_diagnose_single(stock_id):
         from strategies._helpers import check_profitability
         import finlab_fetcher
 
-        # 確保 FinLab 快取已載入
+        _h_single_status[stock_id]["current"] = "載入 FinLab 快取..."
         finlab_fetcher.load_daily_cache()
 
-        # 使用 get_enriched_df 確保指標與選股器一致（FinLab TA-Lib）
+        _h_single_status[stock_id]["current"] = f"取得 {stock_id} 歷史資料..."
         price_df = finlab_fetcher.get_enriched_df(stock_id)
         if price_df.empty or len(price_df) < 65:
-            return jsonify({"error": "歷史資料不足（需至少 65 天）"})
+            _h_single_status[stock_id]["error"] = "歷史資料不足（需至少 65 天）"
+            return
 
         # 即時報價合併
+        _h_single_status[stock_id]["current"] = f"取得 {stock_id} 即時報價..."
         rt = fetch_realtime_quote(stock_id)
         rt_time = None
         if rt and rt["price"]:
@@ -3859,7 +3880,6 @@ def api_h_diagnose_single(stock_id):
                 rt_date = pd.Timestamp(f"{rt_date_str[:4]}-{rt_date_str[4:6]}-{rt_date_str[6:8]}")
                 last_hist = price_df["date"].iloc[-1]
                 if rt_date > last_hist:
-                    # 新的一天：drop s_* 欄位後加入新列，強制重算指標
                     s_cols = [c for c in price_df.columns if c.startswith("s_")]
                     price_df = price_df.drop(columns=s_cols)
                     new_row = pd.DataFrame([{
@@ -3870,7 +3890,7 @@ def api_h_diagnose_single(stock_id):
                     }])
                     price_df = pd.concat([price_df, new_row], ignore_index=True)
                 elif rt_date == last_hist:
-                    # 同一天：只更新 OHLCV，保留 FinLab 指標
+                    # 同一天：更新 OHLCV，drop s_* 強制重算指標
                     price_df.loc[price_df.index[-1], "close"] = rt["price"]
                     if rt.get("high"):
                         price_df.loc[price_df.index[-1], "high"] = rt["high"]
@@ -3878,11 +3898,10 @@ def api_h_diagnose_single(stock_id):
                         price_df.loc[price_df.index[-1], "low"] = rt["low"]
                     if rt.get("volume"):
                         price_df.loc[price_df.index[-1], "volume"] = rt["volume"]
-                        # volume 更新後需重算 vol_ma5 / vol_ratio
-                        price_df["s_vol_ma5"] = price_df["volume"].rolling(window=5).mean().round(0)
-                        vol_ma5 = price_df["s_vol_ma5"].replace(0, np.nan)
-                        price_df["s_vol_ratio"] = (price_df["volume"] / vol_ma5).round(2)
+                    s_cols = [c for c in price_df.columns if c.startswith("s_")]
+                    price_df = price_df.drop(columns=s_cols)
 
+        _h_single_status[stock_id]["current"] = f"計算 {stock_id} H策略指標..."
         enriched = compute_screener_indicators(price_df)
         diag = diagnose_h_strategy(enriched)
 
@@ -3891,7 +3910,6 @@ def api_h_diagnose_single(stock_id):
             from data_fetcher import _name_cache as _nc2
             name = _nc2.get(stock_id, stock_id)
 
-        # 基本面（已含 FinLab fallback）
         prof_pass, prof_reason = None, ""
         try:
             prof_pass, prof_reason = check_profitability(stock_id)
@@ -3899,14 +3917,12 @@ def api_h_diagnose_single(stock_id):
         except Exception:
             pass
 
-        # 營收年增率（從 FinLab 快取）
         rev_yoy = None
         try:
             rev_yoy = finlab_fetcher.get_revenue_yoy(stock_id)
         except Exception:
             pass
 
-        # EPS（從 FinLab 快取）
         latest_eps, eps_quarter = None, ""
         try:
             eps_val, eps_q, _ = finlab_fetcher.get_eps(stock_id)
@@ -3915,16 +3931,44 @@ def api_h_diagnose_single(stock_id):
         except Exception:
             pass
 
-        return jsonify(_sanitize_for_json({
+        _h_single_status[stock_id]["result"] = _sanitize_for_json({
             "stock_id": stock_id, "name": name,
             "close": diag.get("summary", {}).get("close"),
             "diagnose": diag,
             "prof_pass": prof_pass, "prof_reason": prof_reason,
             "latest_eps": latest_eps, "eps_quarter": eps_quarter,
             "rev_yoy": rev_yoy, "rt_time": rt_time,
-        }))
+        })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        import traceback; traceback.print_exc()
+        _h_single_status[stock_id]["error"] = str(e)
+    finally:
+        _h_single_status[stock_id]["done"] = True
+
+
+@app.route("/api/h-diagnose/single/<stock_id>", methods=["POST"])
+def api_h_diagnose_single(stock_id):
+    """啟動背景線程執行單股 H 策略診斷。"""
+    _h_single_status[stock_id] = {
+        "done": False, "error": None, "current": "啟動中...", "result": None,
+    }
+    t = threading.Thread(target=_run_h_single_bg, args=(stock_id,), daemon=True)
+    t.start()
+    return jsonify({"started": True})
+
+
+@app.route("/api/h-diagnose/single-status/<stock_id>")
+def api_h_diagnose_single_status(stock_id):
+    """輪詢單股 H 策略診斷狀態。"""
+    s = _h_single_status.get(stock_id)
+    if not s:
+        return jsonify({"done": False, "error": "未啟動診斷"})
+    return jsonify({
+        "done": s["done"],
+        "error": s["error"],
+        "current": s["current"],
+        "result": s["result"],
+    })
 
 
 # ═══════════════════════════════════════════════════════════

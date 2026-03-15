@@ -854,9 +854,9 @@ def fetch_realtime_quotes_batch(stock_ids: list, exchange_map: dict = None,
     for sid in stock_ids:
         if exchange_map:
             ex = exchange_map.get(sid, "")
-            if ex == "twse":
+            if ex in ("twse", "tse"):
                 tse_ids.append(sid)
-            elif ex == "tpex":
+            elif ex in ("tpex", "otc"):
                 otc_ids.append(sid)
             else:
                 unknown_ids.append(sid)
@@ -1131,6 +1131,7 @@ def fetch_eps(stock_id):
 _industry_cache = None
 _industry_cache_time = 0
 _name_cache = {}  # stock_id → stock_name，由 fetch_industry_map 順便填入
+_exchange_cache = {}  # stock_id → 'tse'/'otc'，由 fetch_industry_map 順便填入
 
 
 def fetch_industry_map() -> dict:
@@ -1177,6 +1178,7 @@ def fetch_industry_map() -> dict:
                             # 順便擷取股票名稱
                             if len(parts) > 1:
                                 _name_cache[sid] = " ".join(parts[1:])
+                            _exchange_cache[sid] = "tse"
                             ind = str(row[ind_col]).strip()
                             if ind and ind != "nan":
                                 industry[sid] = ind
@@ -1215,6 +1217,7 @@ def fetch_industry_map() -> dict:
                             # 順便擷取股票名稱
                             if len(parts) > 1:
                                 _name_cache[sid] = " ".join(parts[1:])
+                            _exchange_cache[sid] = "otc"
                             ind = str(row[ind_col]).strip()
                             if ind and ind != "nan":
                                 industry[sid] = ind
@@ -1238,6 +1241,14 @@ def fetch_name_map() -> dict:
     由 fetch_industry_map() 順便填入，必須先呼叫過 fetch_industry_map()。
     """
     return dict(_name_cache)
+
+
+def fetch_exchange_map() -> dict:
+    """
+    回傳 stock_id → 'tse'/'otc' 對照表。
+    由 fetch_industry_map() 順便填入，必須先呼叫過 fetch_industry_map()。
+    """
+    return dict(_exchange_cache)
 
 
 # ── 整合取得單一股票所有資料 ────────────────────────────────
