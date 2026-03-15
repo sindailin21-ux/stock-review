@@ -796,7 +796,7 @@ def _run_intraday_scan():
             except Exception as e:
                 continue
 
-        _intraday_status["rows"] = results
+        _intraday_status["rows"] = _sanitize_for_json(results)
         print(f"   🎯 盤中 H 策略命中：{len(results)} 檔")
 
     except Exception as e:
