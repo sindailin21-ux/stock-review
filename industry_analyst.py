@@ -218,24 +218,36 @@ def _call_ai(prompt: str) -> dict:
 
 
 def _parse_response(raw: str) -> dict:
-    """解析 Gemini 回傳的 JSON"""
+    """解析 AI 回傳的 JSON，增強容錯"""
     raw = raw.strip()
+
     # 移除 markdown 包裹
     if raw.startswith("```"):
         lines = raw.split("\n")
-        # 找第一個 ``` 後的內容
         start = 1
-        if lines[0].startswith("```json"):
-            start = 1
-        # 找最後一個 ```
         end = len(lines)
         for i in range(len(lines) - 1, 0, -1):
             if lines[i].strip() == "```":
                 end = i
                 break
-        raw = "\n".join(lines[start:end])
+        raw = "\n".join(lines[start:end]).strip()
 
-    return json.loads(raw.strip())
+    # 嘗試直接解析
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # 嘗試從回傳文字中擷取第一個 JSON 物件
+    import re
+    match = re.search(r'\{[\s\S]*\}', raw)
+    if match:
+        try:
+            return json.loads(match.group())
+        except json.JSONDecodeError:
+            pass
+
+    raise ValueError(f"無法從 AI 回應中解析 JSON，原始回應前 200 字：{raw[:200]}")
 
 
 # ═══════════════════════════════════════════════════════════

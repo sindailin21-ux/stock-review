@@ -203,6 +203,12 @@ def scan_stocks(
             prev = enriched.iloc[-2] if len(enriched) >= 2 else last
             close = float(last["close"])
             change_pct = round((last["close"] - prev["close"]) / prev["close"] * 100, 2) if prev["close"] else 0
+            # 記錄資料日期，讓前端知道資料新鮮度
+            data_date = ""
+            if "date" in enriched.columns:
+                data_date = str(enriched["date"].iloc[-1])[:10]
+            elif hasattr(enriched.index, 'strftime'):
+                data_date = enriched.index[-1].strftime("%Y-%m-%d")
             ma5  = round(float(last["s_ma5"]), 2) if pd.notna(last.get("s_ma5")) else None
             ma10 = round(float(last["s_ma10"]), 2) if pd.notna(last.get("s_ma10")) else None
             ma20 = round(float(last["s_ma20"]), 2) if pd.notna(last.get("s_ma20")) else None
@@ -275,6 +281,7 @@ def scan_stocks(
                     "name": name,
                     "close": close,
                     "change_pct": change_pct,
+                    "data_date": data_date,
                     "ma5": ma5,
                     "ma10": ma10,
                     "ma20": ma20,

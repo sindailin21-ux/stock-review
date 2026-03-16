@@ -769,14 +769,15 @@ def _run_intraday_scan():
                     if not profit_ok:
                         continue
 
-                    last = enriched.iloc[-1]
-                    prev = enriched.iloc[-2] if len(enriched) >= 2 else last
-                    change_pct = round((last["close"] - prev["close"]) / prev["close"] * 100, 2) if prev["close"] else 0
+                    # 盤中即時：用即時價 vs 前一交易日收盤計算漲跌幅
+                    prev_close = float(enriched.iloc[-1]["close"]) if len(enriched) >= 1 else 0
+                    rt_price = rt["price"]
+                    change_pct = round((rt_price - prev_close) / prev_close * 100, 2) if prev_close else 0
 
                     results.append({
                         "stock_id": sid,
                         "name": rt.get("name", sid),
-                        "close": rt["price"],
+                        "close": rt_price,
                         "change_pct": change_pct,
                         "ma5": result.get("ma5"),
                         "ma10": result.get("ma10"),
@@ -2641,7 +2642,7 @@ function renderTable(rows){
       '<td>'+stratBadges+' <span style="font-size:11px;color:var(--text2)">'+r.strategy_labels+'</span>'+pbTag+'</td>'+
       '<td>'+poolBadge+'</td>'+
       '<td class="td-num">'+(r.close!=null?r.close.toFixed(2):'-')+'</td>'+
-      '<td><span class="badge '+chgClass+'">'+(r.change_pct>=0?'+':'')+r.change_pct.toFixed(2)+'%</span></td>'+
+      '<td><span class="badge '+chgClass+'">'+(r.change_pct>=0?'+':'')+r.change_pct.toFixed(2)+'%</span>'+(r.data_date?'<span style="font-size:10px;color:var(--text2);margin-left:3px;" title="資料日期">'+r.data_date.slice(5)+'</span>':'')+'</td>'+
       '<td class="td-num">'+(r.vol_ratio!=null?r.vol_ratio.toFixed(2)+'x':'-')+'</td>'+
     '</tr>';
     // ── 第二列：補充資訊 ──
