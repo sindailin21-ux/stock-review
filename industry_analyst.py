@@ -313,7 +313,15 @@ def get_industry_report(ticker: str, name: str, industry: str = "") -> dict:
         err_msg = str(e)
         print(f"  ⚠️ Claude 產業報告失敗：{err_msg}")
         report = _fallback_report(ticker, name, industry, conference_info)
-        report["error_hint"] = f"Claude AI 暫時無法使用：{err_msg[:100]}"
+        # 辨識常見錯誤，給使用者明確提示
+        if "credit balance is too low" in err_msg:
+            report["error_hint"] = "⚠️ Anthropic API 餘額不足，請至 console.anthropic.com/settings/billing 儲值"
+        elif "authentication_error" in err_msg or "invalid x-api-key" in err_msg:
+            report["error_hint"] = "⚠️ Anthropic API Key 無效或已過期，請至 console.anthropic.com/settings/keys 重新產生"
+        elif "rate_limit" in err_msg:
+            report["error_hint"] = "⚠️ Anthropic API 請求頻率超限，請稍後再試"
+        else:
+            report["error_hint"] = f"Claude AI 暫時無法使用：{err_msg[:100]}"
         return report
 
 
