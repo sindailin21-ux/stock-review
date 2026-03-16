@@ -90,17 +90,18 @@ def compute_screener_indicators(df: pd.DataFrame) -> pd.DataFrame:
         _tr2 = (_high - _close.shift(1)).abs()
         _tr3 = (_low - _close.shift(1)).abs()
         _true_range = pd.concat([_tr1, _tr2, _tr3], axis=1).max(axis=1)
-        _atr = _true_range.rolling(_adx_p).mean()
+        # Wilder's smoothing (EWM alpha=1/period) 與 TA-Lib 一致
+        _atr = _true_range.ewm(alpha=1.0 / _adx_p, min_periods=_adx_p, adjust=False).mean()
 
         _up_move = _high - _high.shift(1)
         _down_move = _low.shift(1) - _low
         _plus_dm = _up_move.where((_up_move > _down_move) & (_up_move > 0), 0.0)
         _minus_dm = _down_move.where((_down_move > _up_move) & (_down_move > 0), 0.0)
 
-        _plus_di = 100 * (_plus_dm.rolling(_adx_p).mean() / _atr)
-        _minus_di = 100 * (_minus_dm.rolling(_adx_p).mean() / _atr)
+        _plus_di = 100 * (_plus_dm.ewm(alpha=1.0 / _adx_p, min_periods=_adx_p, adjust=False).mean() / _atr)
+        _minus_di = 100 * (_minus_dm.ewm(alpha=1.0 / _adx_p, min_periods=_adx_p, adjust=False).mean() / _atr)
         _dx = (_plus_di - _minus_di).abs() / (_plus_di + _minus_di).replace(0, _np.nan) * 100
-        _adx = _dx.rolling(_adx_p).mean()
+        _adx = _dx.ewm(alpha=1.0 / _adx_p, min_periods=_adx_p, adjust=False).mean()
 
         # 欄位名保持 s_adx14 等（向下兼容策略函式）
         df["s_adx14"] = _adx.round(2)
