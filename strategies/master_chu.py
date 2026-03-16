@@ -487,7 +487,7 @@ def strategy_h_chu_best(df: pd.DataFrame, industry: str = "", **kwargs) -> dict 
       1. 趨勢偵測：ADX(8)>20 且 +DI>-DI（取代擺盪高低點）
       2. RSI(14) 濾鏡：50 < RSI < 80（趨勢中但未超買）
       3. 放寬量能：量 > VMA5 × 1.2（不要求紅K/上影線）
-      4. 動態乖離：ADX≤30→5%, ADX≤40→8%, ADX>40→10%
+      4. 放寬乖離：MA5 乖離率 < 5%
 
     出場建議：移動停利 15%（從最高點回落），停損 6%，最低持有 5 天。
     """
@@ -552,18 +552,9 @@ def strategy_h_chu_best(df: pd.DataFrame, industry: str = "", **kwargs) -> dict 
     if volume <= vol_ma5 * 1.2:
         return None
 
-    # 6. 動態乖離率上限（依 ADX 趨勢強度放寬）
-    #    ADX 20-30（溫和趨勢）：≤ 5%
-    #    ADX 30-40（強趨勢）  ：≤ 8%
-    #    ADX > 40 （極強趨勢）：≤ 10%
+    # 6. 乖離率 < 5%（回測最佳，避免追高）
     bias = (close - ma5) / ma5
-    if adx <= 30:
-        max_bias = 0.05
-    elif adx <= 40:
-        max_bias = 0.08
-    else:
-        max_bias = 0.10
-    if bias >= max_bias:
+    if bias >= 0.05:
         return None
 
     # ── 計算進場 / 出場價位 ──
@@ -594,7 +585,6 @@ def strategy_h_chu_best(df: pd.DataFrame, industry: str = "", **kwargs) -> dict 
         "vol_ratio": round(volume / vol_ma5, 2),
         "dist_ma20_pct": round((close - ma20) / ma20 * 100, 2),
         "bias_ma5_pct": round(bias * 100, 2),
-        "bias_max_pct": round(max_bias * 100, 1),
         # ── 進出場計畫 ──
         "entry_price": round(entry_price, 2),
         "stop_loss_price": stop_loss_price,
@@ -748,21 +738,14 @@ def diagnose_h_strategy(df: pd.DataFrame, industry: str = "", **kwargs) -> dict:
         "detail": f"達標 {vol_pct}%" if vol_ok else f"僅 {vol_pct}%",
     })
 
-    # ⑨ 動態乖離率（依 ADX 趨勢強度）
+    # ⑨ 乖離率 < 5%
     bias = (close - ma5) / ma5 if ma5 > 0 else 0
-    if adx <= 30:
-        diag_max_bias = 0.05
-    elif adx <= 40:
-        diag_max_bias = 0.08
-    else:
-        diag_max_bias = 0.10
-    bias_ok = bias < diag_max_bias
-    bias_label = f"乖離率 < {diag_max_bias*100:.0f}%"
+    bias_ok = bias < 0.05
     checks.append({
-        "name": bias_label,
+        "name": "乖離率 < 5%",
         "passed": bias_ok,
         "value": f"{bias*100:.2f}%",
-        "threshold": f"< {diag_max_bias*100:.0f}%（ADX={adx:.0f}）",
+        "threshold": "< 5%",
         "detail": "合理範圍" if bias_ok else "乖離過大，追高風險",
     })
 
