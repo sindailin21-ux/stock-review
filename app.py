@@ -542,12 +542,20 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
         except Exception as e:
             print(f"⚠️ watchlist 更新失敗（不影響結果）：{e}")
 
-        # 排序：E-only 墊底 → 回檔買點置頂 → Pool B → Pool A → AI 優先產業 → 觸發數多
+        # 排序：策略優先級 H>G>F>E → 回檔買點 → Pool → AI 產業 → 觸發數多
         AI_PRIORITY_INDUSTRIES = {"半導體業", "電腦及週邊設備業", "電子零組件業"}
         _pool_order = {"B": 0, "A": 1}
+        _strat_priority = {"H": 0, "G": 1, "F": 2, "D": 3, "C": 4, "B": 5, "A": 6, "E": 7}
+
+        def _strat_sort_key(r):
+            """策略優先級：取觸發策略中最高優先級"""
+            triggered = r.get("triggered", [])
+            best = min((_strat_priority.get(s, 99) for s in triggered), default=99)
+            return best
+
         rows.sort(key=lambda r: (
-            1 if r.get("triggered", []) == ["E"] else 0,  # E-only 排最後
-            0 if r.get("pullback_buy") else 1,  # 🎯 回檔買點置頂
+            _strat_sort_key(r),                          # 策略優先級 H>G>F>...>E
+            0 if r.get("pullback_buy") else 1,           # 🎯 回檔買點置頂
             _pool_order.get(r.get("pool"), 2),
             0 if r.get("pool_transition") == "轉強訊號" else 1,
             0 if r.get("industry", "") in AI_PRIORITY_INDUSTRIES else 1,
@@ -2713,9 +2721,22 @@ function renderTable(rows){
   '</div>';
 }
 
+var STRAT_PRIO={H:0,G:1,F:2,D:3,C:4,B:5,A:6,E:7};
+function _bestStrat(r){
+  var t=r.triggered||[];
+  var best=99;
+  for(var i=0;i<t.length;i++){var p=STRAT_PRIO[t[i]];if(p!=null&&p<best)best=p;}
+  return best;
+}
 function sortBy(col){
   if(_sortCol===col){_sortAsc=!_sortAsc;}else{_sortCol=col;_sortAsc=true;}
   var sorted=_allRows.slice().sort(function(a,b){
+    if(col==='strategy_labels'){
+      var pa=_bestStrat(a),pb=_bestStrat(b);
+      if(pa!==pb)return _sortAsc?pa-pb:pb-pa;
+      var la=(a.triggered||[]).length,lb=(b.triggered||[]).length;
+      return _sortAsc?lb-la:la-lb;
+    }
     var av=a[col],bv=b[col];
     if(av==null)return 1;if(bv==null)return -1;
     if(typeof av==='string')return _sortAsc?av.localeCompare(bv):bv.localeCompare(av);
