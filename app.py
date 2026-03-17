@@ -1440,6 +1440,7 @@ tbody td{padding:8px;border-bottom:1px solid var(--border);vertical-align:top;}
 .summary-num.orange{color:var(--orange);}
 .summary-num.yellow{color:var(--yellow);}
 .summary-num.blue{color:var(--blue);}
+.summary-num.red{color:var(--red);}
 /* detail panel */
 .detail-panel{display:none;background:var(--bg3);border-radius:8px;padding:16px;margin-top:8px;}
 .detail-panel.show{display:block;}
@@ -1572,6 +1573,7 @@ function renderSummary(s){
     {label:'建議減碼',value:s.reduce,cls:'orange'},
     {label:'提高警覺',value:s.alert,cls:'yellow'},
     {label:'建議落袋',value:s.take_profit,cls:'blue'},
+    {label:'⚠ 高檔出貨',value:s.dist_top||0,cls:'red'},
   ];
   document.getElementById('summaryArea').innerHTML=items.map(function(it){
     return '<div class="summary-item"><span class="summary-num '+it.cls+'">'+it.value+'</span><span class="summary-label">'+it.label+'</span></div>';
@@ -1648,7 +1650,9 @@ function _renderChuTable(){
     html+='<td><span class="badge '+fnCls+'">'+(fn!=null?fn.toLocaleString():'-')+'</span></td>';
     html+='<td><span class="badge '+tnCls+'">'+(tn!=null?tn.toLocaleString():'-')+'</span></td>';
 
-    html+='<td><span class="badge '+cfg.badge+'">'+cfg.icon+' '+cfg.label+'</span></td>';
+    html+='<td><span class="badge '+cfg.badge+'">'+cfg.icon+' '+cfg.label+'</span>';
+    if(r.dist_top) html+=' <span class="badge badge-red" title="高檔出貨警示（長黑K＋法人賣超）">⚠ 出貨</span>';
+    html+='</td>';
     html+='<td style="font-size:12px;">'+rev.summary+'</td>';
 
     var ma=rev.ma_status||{};
@@ -2244,7 +2248,7 @@ function renderTable(rows){
       '<td><a class="badge strat-h report-link" style="text-decoration:none;cursor:pointer;" onclick="openDetail('+idx+')">🔍 H 診斷</a></td>'+
       '<td class="td-num">'+priceHtml+'</td>'+
       '<td class="td-num"><span class="'+scoreCls+'">'+scoreLabel+'</span></td>'+
-      '<td style="text-align:center;">'+verdictHtml+'</td>'+
+      '<td style="text-align:center;">'+verdictHtml+(r.dist_top?' <span class="badge badge-red" title="高檔出貨警示（長黑K＋法人賣超）">⚠ 出貨</span>':'')+'</td>'+
       '<td style="text-align:center;">'+profHtml+'</td>'+
       '<td class="td-num">'+fHtml+'</td>'+
       '<td class="td-num">'+tHtml+'</td>'+
@@ -3579,7 +3583,7 @@ def _run_chu_review_bg(stock_ids):
 
         today_str = _date.today().strftime("%Y-%m-%d")
         reviews = []
-        summary = {"total": 0, "healthy": 0, "reduce": 0, "alert": 0, "take_profit": 0, "buy_point": 0}
+        summary = {"total": 0, "healthy": 0, "reduce": 0, "alert": 0, "take_profit": 0, "buy_point": 0, "dist_top": 0}
         is_intraday = False
         _chu_review_status["total"] = len(stock_ids)
 
@@ -3649,19 +3653,47 @@ def _run_chu_review_bg(stock_ids):
 
                 review = chu_info.review_func(enriched)
 
-                # 法人買賣超（張）
-                foreign_net, trust_net = finlab_fetcher.get_latest_institutional_net(sid)
+                # 法人買賣超（張）— 取兩日資料供顯示 + 近5日供出貨判斷
+                foreign_net, trust_net, prev_foreign_net, prev_trust_net = finlab_fetcher.get_institutional_net_2d(sid)
+
+                # 高檔出貨警示（覆盤用，Mode B 擴大為近 5 天）
+                from strategies._helpers import check_distribution_top
+                dist_top = check_distribution_top(enriched, foreign_net, trust_net,
+                                                  prev_foreign_net, prev_trust_net)
+                # Mode B 加強：近 5 天內有買超 + 近 5 天內有賣超 ≥ 最大買超量
+                if not dist_top:
+                    inst_nd = finlab_fetcher.get_institutional_net_nd(sid, n=5)
+                    # 外資
+                    f_buys = [f for f, _, _, _ in inst_nd if f is not None and f > 0]
+                    f_sells = [f for f, _, _, _ in inst_nd if f is not None and f < 0]
+                    if f_buys and f_sells:
+                        max_buy = max(f_buys)
+                        max_sell = max(abs(s) for s in f_sells)
+                        if max_sell >= max_buy:
+                            dist_top = True
+                    # 投信
+                    if not dist_top:
+                        t_buys = [t for _, t, _, _ in inst_nd if t is not None and t > 0]
+                        t_sells = [t for _, t, _, _ in inst_nd if t is not None and t < 0]
+                        if t_buys and t_sells:
+                            max_buy_t = max(t_buys)
+                            max_sell_t = max(abs(s) for s in t_sells)
+                            if max_sell_t >= max_buy_t:
+                                dist_top = True
 
                 review_item = {
                     "stock_id": sid, "name": name, "industry": ind_map.get(sid, ""),
                     "close": close, "change_pct": change_pct, "review": review,
                     "foreign_net": foreign_net, "trust_net": trust_net,
+                    "dist_top": dist_top,
                 }
                 if rt_time:
                     review_item["rt_time"] = rt_time
                 reviews.append(review_item)
 
                 summary["total"] += 1
+                if dist_top:
+                    summary["dist_top"] += 1
                 st = review.get("status", "healthy")
                 if st in summary:
                     summary[st] += 1
@@ -3839,11 +3871,28 @@ def _run_h_diagnose_bg(stock_ids):
                 if rt_time:
                     item["rt_time"] = rt_time
 
-                # 法人買賣超（從 FinLab 快取）
+                # 法人買賣超（從 FinLab 快取）— 取兩日供高檔出貨判斷
                 try:
-                    fn, tn = finlab_fetcher.get_latest_institutional_net(sid)
+                    fn, tn, pfn, ptn = finlab_fetcher.get_institutional_net_2d(sid)
                     item["foreign_net"] = fn
                     item["trust_net"] = tn
+                    # 高檔出貨警示
+                    from strategies._helpers import check_distribution_top
+                    _dt = check_distribution_top(enriched, fn, tn, pfn, ptn)
+                    # Mode B 加強：近 5 天內有買超 + 近 5 天內有賣超 ≥ 最大買超量
+                    if not _dt:
+                        _ind = finlab_fetcher.get_institutional_net_nd(sid, n=5)
+                        _fb = [f for f, _, _, _ in _ind if f is not None and f > 0]
+                        _fs = [f for f, _, _, _ in _ind if f is not None and f < 0]
+                        if _fb and _fs and max(abs(s) for s in _fs) >= max(_fb):
+                            _dt = True
+                    if not _dt:
+                        _ind = finlab_fetcher.get_institutional_net_nd(sid, n=5)
+                        _tb = [t for _, t, _, _ in _ind if t is not None and t > 0]
+                        _ts = [t for _, t, _, _ in _ind if t is not None and t < 0]
+                        if _tb and _ts and max(abs(s) for s in _ts) >= max(_tb):
+                            _dt = True
+                    item["dist_top"] = _dt
                 except Exception:
                     pass
 
