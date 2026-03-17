@@ -2527,11 +2527,7 @@ var pollTimer=null;
 var _allRows=[];
 var _sortCol='';
 var _sortAsc=true;
-var _marketMap={};
-
-// 載入市場別對照表（TradingView 連結用）
-fetch('/api/market-map').then(function(r){return r.json();}).then(function(d){_marketMap=d;}).catch(function(){});
-function tvUrl(sid){var ex=_marketMap[sid]==='otc'?'TPEX':'TWSE';return 'https://www.tradingview.com/chart/?symbol='+ex+'%3A'+sid;}
+function tvUrl(sid){return 'https://www.wantgoo.com/stock/'+sid+'/technical-chart';}
 
 // 初始化日期為今天
 (function(){
