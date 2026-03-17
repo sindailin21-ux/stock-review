@@ -432,22 +432,23 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
             _screener_status["error"] = "過濾後無符合條件的股票"
             return
 
-        # 名稱對照表（由 fetch_industry_map 順便填入 _name_cache）
-        # 先嘗試從上次快取取得（fetch_industry_map 有 1 小時快取）
-        from data_fetcher import fetch_name_map as _fetch_name_map
-        name_map = _fetch_name_map()  # 若之前已呼叫過，有快取直接拿
-
-        # ── 產業分類（背景載入，與掃描並行）──
+        # 名稱 + 產業：優先用 FinLab 快取（穩定，不受海外 IP 限制）
+        name_map = finlab_fetcher.get_company_name_map()
         _screener_status["current"] = "啟動產業分類載入..."
-        _ind_map_result = {"data": {}, "names": {}}
+        _ind_map_result = {"data": dict(finlab_fetcher.get_company_industry_map()), "names": dict(name_map)}
 
         def _load_industry():
+            """TWSE/TPEX 補充（海外 IP 可能失敗，失敗不影響）"""
             try:
-                _ind_map_result["data"] = fetch_industry_map()
-                _ind_map_result["names"] = _fetch_name_map()
+                twse_ind = fetch_industry_map()
+                from data_fetcher import fetch_name_map as _fetch_name_map
+                twse_names = _fetch_name_map()
+                if twse_ind:
+                    _ind_map_result["data"].update(twse_ind)
+                if twse_names:
+                    _ind_map_result["names"].update(twse_names)
             except Exception:
-                _ind_map_result["data"] = {}
-                _ind_map_result["names"] = {}
+                pass  # FinLab fallback 已有資料
 
         import threading as _thr
         ind_thread = _thr.Thread(target=_load_industry, daemon=True)
@@ -696,7 +697,14 @@ def _run_intraday_scan():
         # ── 3. 產業分類 + 交易所對照（供即時報價分流） ──
         _intraday_status["current"] = "載入產業分類..."
         from data_fetcher import fetch_industry_map, fetch_exchange_map
-        industry_map = fetch_industry_map()
+        # FinLab 為主，TWSE 補充
+        industry_map = dict(finlab_fetcher.get_company_industry_map())
+        try:
+            twse_ind = fetch_industry_map()
+            if twse_ind:
+                industry_map.update(twse_ind)
+        except Exception:
+            pass
         exchange_map = fetch_exchange_map()  # sid → 'tse'/'otc'
 
         # ── 4. 批次抓即時報價（依交易所分流，避免重試） ──
@@ -3523,10 +3531,13 @@ def _run_chu_review_bg(stock_ids):
             return
 
         _chu_review_status["current"] = "載入產業分類..."
+        ind_map = dict(finlab_fetcher.get_company_industry_map())
         try:
-            ind_map = fetch_industry_map()
+            twse_ind = fetch_industry_map()
+            if twse_ind:
+                ind_map.update(twse_ind)
         except Exception:
-            ind_map = {}
+            pass  # FinLab fallback 已有資料
 
         # 確保 FinLab 快取已載入
         _chu_review_status["current"] = "載入 FinLab 快取..."

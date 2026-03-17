@@ -146,6 +146,33 @@ def load_daily_cache(target_date: str | None = None, status: dict | None = None)
     print("📥 FinLab：載入 EPS...")
     _cache["eps"] = _trim(data.get("financial_statement:每股盈餘"))
 
+    # 【公司基本資訊】— 名稱 + 產業（TWSE 網站海外 IP 常失敗，此為穩定 fallback）
+    if status:
+        status["current"] = "FinLab：載入公司基本資訊..."
+    print("📥 FinLab：載入公司基本資訊...")
+    try:
+        _company_info = data.get("company_basic_info")
+        if _company_info is not None and not _company_info.empty:
+            # 建立 stock_id → name / industry 對照 dict
+            _sid_col = "stock_id" if "stock_id" in _company_info.columns else "symbol"
+            _name_map = {}
+            _ind_map = {}
+            for _, row in _company_info.iterrows():
+                sid = str(row.get(_sid_col, "")).strip()
+                if not sid or len(sid) != 4:
+                    continue
+                name = str(row.get("公司簡稱", "")).strip()
+                ind = str(row.get("產業類別", "")).strip()
+                if name and name != "nan":
+                    _name_map[sid] = name
+                if ind and ind != "nan":
+                    _ind_map[sid] = ind
+            _cache["company_name"] = _name_map
+            _cache["company_industry"] = _ind_map
+            print(f"  📂 公司名稱：{len(_name_map)} 檔，產業分類：{len(_ind_map)} 檔")
+    except Exception as e:
+        print(f"  ⚠️ 公司基本資訊載入失敗：{e}")
+
     # 計算記憶體用量
     total_mb = sum(
         v.memory_usage(deep=True).sum() for v in _cache.values()
@@ -502,6 +529,20 @@ def get_all_stock_ids() -> list:
     if close_wide is None:
         return []
     return list(close_wide.columns)
+
+
+def get_company_name_map() -> dict:
+    """回傳 stock_id → 公司簡稱 對照表（來自 FinLab）。"""
+    if not _cache:
+        return {}
+    return _cache.get("company_name", {})
+
+
+def get_company_industry_map() -> dict:
+    """回傳 stock_id → 產業類別 對照表（來自 FinLab）。"""
+    if not _cache:
+        return {}
+    return _cache.get("company_industry", {})
 
 
 def reset_cache():
