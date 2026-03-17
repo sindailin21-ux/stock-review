@@ -166,6 +166,8 @@ def parse_args():
                         help="一鍵套用最佳策略（ADX趨勢+放寬進場+RSI+停損6%%+停利15%%+持有5天）")
     parser.add_argument("--rev-yoy", type=float, default=0,
                         help="營收 YoY 門檻 (default: 0 = 任何正成長，0.2 = 20%%)")
+    parser.add_argument("--dist-filter", action="store_true",
+                        help="高檔出貨過濾：長黑K + 位階>70%% + 法人賣超 → 排除進場")
     return parser.parse_args()
 
 
@@ -633,6 +635,7 @@ def run_backtest(args):
         args.min_hold = 5
         args.exit_ma = -2          # 純移動停利出場
         args._rsi_filter = True    # 內部旗標：啟用 RSI 50-80 濾鏡
+        args.dist_filter = True    # 高檔出貨過濾
     else:
         args._rsi_filter = False
 
@@ -654,7 +657,8 @@ def run_backtest(args):
     rsi_label = "ON（50-80）" if args._rsi_filter else "OFF"
     print(f"  放寬進場: {relax_label}  |  ATR停損: {'ON' if args.atr_stop else 'OFF'}")
     print(f"  均線多排: {ma_label}  |  移動停利: {trail_label}")
-    print(f"  RSI濾鏡: {rsi_label}")
+    dist_label = "ON（長黑K+位階>70%+法人賣超）" if args.dist_filter else "OFF"
+    print(f"  RSI濾鏡: {rsi_label}  |  高檔出貨: {dist_label}")
     print("=" * 56)
     print()
 
@@ -901,6 +905,55 @@ def run_backtest(args):
         entries = entries & rsi_mask
         after_rsi = int(entries.sum().sum())
         print(f"   RSI 50-80 濾鏡：{before_rsi} → {after_rsi} 訊號（過濾 {before_rsi - after_rsi}）")
+
+    # ── 6c. 高檔出貨過濾（長黑K + 位階>70% + 法人賣超）──
+    if args.dist_filter:
+        print("📐 計算高檔出貨過濾...")
+        # 條件 1：長黑K（收黑 + 實體 > 3%）
+        _is_black = close < open_
+        _body_pct = (open_ - close) / open_ * 100
+        _long_black = _is_black & (_body_pct > 3)
+
+        # 條件 2：位階 > 70%（近 60 日高低區間）
+        _high_60 = high.rolling(60).max()
+        _low_60 = low.rolling(60).min()
+        _range_60 = _high_60 - _low_60
+        _position = ((close - _low_60) / _range_60.replace(0, np.nan) * 100).fillna(50)
+        _high_pos = _position > 70
+
+        # 條件 3：法人賣超（外資或投信任一淨賣超）
+        try:
+            print("   📥 下載法人買賣超資料...")
+            _foreign_net = data.get("institutional_investors_trading_summary:外陸資買賣超股數(不含外資自營商)")
+            _trust_net = data.get("institutional_investors_trading_summary:投信買賣超股數")
+            # 對齊到 close 的 index/columns
+            _foreign_net = _foreign_net.reindex(index=close.index, columns=close.columns).fillna(0)
+            _trust_net = _trust_net.reindex(index=close.index, columns=close.columns).fillna(0)
+            _inst_selling = (_foreign_net < 0) | (_trust_net < 0)
+
+            # 模式 A：高檔出貨（長黑K + 位階>70% + 法人賣超）
+            _dist_mode_a = _long_black & _high_pos & _inst_selling
+
+            # 模式 B：誘多翻臉（長黑K + 前日買超→今日賣超≥前日買超，不限位階）
+            _prev_foreign = _foreign_net.shift(1)
+            _prev_trust = _trust_net.shift(1)
+            _foreign_flip = (_prev_foreign > 0) & (_foreign_net < 0) & (_foreign_net.abs() >= _prev_foreign)
+            _trust_flip = (_prev_trust > 0) & (_trust_net < 0) & (_trust_net.abs() >= _prev_trust)
+            _dist_mode_b = _long_black & (_foreign_flip | _trust_flip)
+
+            # 任一模式成立 → 排除
+            _dist_top = (_dist_mode_a | _dist_mode_b).fillna(False)
+            _dist_top = _dist_top.reindex(index=entries.index, columns=entries.columns).fillna(False)
+
+            before_dist = int(entries.sum().sum())
+            entries = entries & (~_dist_top)
+            after_dist = int(entries.sum().sum())
+            mode_a_count = int(_dist_mode_a.reindex(index=entries.index, columns=entries.columns).fillna(False).sum().sum())
+            mode_b_count = int(_dist_mode_b.reindex(index=entries.index, columns=entries.columns).fillna(False).sum().sum())
+            print(f"   高檔出貨過濾：{before_dist} → {after_dist} 訊號（排除 {before_dist - after_dist}）")
+            print(f"     模式A（高檔+法人賣）：{mode_a_count}  模式B（誘多翻臉）：{mode_b_count}")
+        except Exception as e:
+            print(f"   ⚠️ 法人資料下載失敗：{e}，跳過高檔出貨過濾")
 
     # 只取回測期間
     entries = entries[entries.index >= start_date]

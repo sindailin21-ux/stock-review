@@ -92,10 +92,15 @@ def check_latest_day_buying(inst_df: pd.DataFrame, investor_type: str) -> bool:
     return False
 
 
-def check_distribution_top(df: pd.DataFrame, foreign_net: int | None, trust_net: int | None) -> bool:
+def check_distribution_top(df: pd.DataFrame, foreign_net: int | None, trust_net: int | None,
+                           prev_foreign_net: int | None = None, prev_trust_net: int | None = None) -> bool:
     """
-    高檔出貨過濾：長黑K + 位階 > 70% + 法人（外資或投信）淨賣超 → True（應排除）。
-    三個條件全部成立才回傳 True。
+    高檔出貨過濾（兩種模式，任一成立即排除）：
+
+    模式 A — 高檔出貨：長黑K + 位階>70% + 法人賣超
+    模式 B — 誘多翻臉：長黑K + 法人前日買超→今日賣超且賣超量≥前日買超量（不限位階）
+
+    三個/兩個條件全部成立才回傳 True。
     """
     if len(df) < 60:
         return False
@@ -104,30 +109,39 @@ def check_distribution_top(df: pd.DataFrame, foreign_net: int | None, trust_net:
     close = float(last["close"])
     open_ = float(last["open"])
 
-    # 1. 長黑K：收黑 且 實體 > 3%
+    # 共用條件：長黑K（收黑 且 實體 > 3%）
     if close >= open_:
         return False
     body_pct = (open_ - close) / open_ * 100
     if body_pct <= 3:
         return False
 
-    # 2. 位階 > 70%（近 60 日高低區間）
+    # ── 模式 A：高檔出貨（位階>70% + 法人賣超）──
     window = df.tail(60)
     high_60 = float(window["high"].max())
     low_60 = float(window["low"].min())
-    if high_60 == low_60:
-        return False
-    position = (close - low_60) / (high_60 - low_60) * 100
-    if position <= 70:
-        return False
+    if high_60 != low_60:
+        position = (close - low_60) / (high_60 - low_60) * 100
+        if position > 70:
+            foreign_selling = foreign_net is not None and foreign_net < 0
+            trust_selling = trust_net is not None and trust_net < 0
+            if foreign_selling or trust_selling:
+                return True
 
-    # 3. 法人淨賣超（外資或投信任一）
-    foreign_selling = foreign_net is not None and foreign_net < 0
-    trust_selling = trust_net is not None and trust_net < 0
-    if not (foreign_selling or trust_selling):
-        return False
+    # ── 模式 B：誘多翻臉（前日買超 → 今日賣超 ≥ 前日買超量）──
+    # 外資：前日買超 > 0，今日賣超且 |賣超| ≥ 前日買超
+    if (prev_foreign_net is not None and prev_foreign_net > 0
+            and foreign_net is not None and foreign_net < 0
+            and abs(foreign_net) >= prev_foreign_net):
+        return True
 
-    return True
+    # 投信：前日買超 > 0，今日賣超且 |賣超| ≥ 前日買超
+    if (prev_trust_net is not None and prev_trust_net > 0
+            and trust_net is not None and trust_net < 0
+            and abs(trust_net) >= prev_trust_net):
+        return True
+
+    return False
 
 
 def detect_swing_highs_lows(df: pd.DataFrame, lookback: int = 40) -> dict | None:

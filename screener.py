@@ -223,11 +223,12 @@ def scan_stocks(
                 except Exception:
                     pass
 
-            # ── 法人淨買賣超（供高檔出貨過濾） ──
+            # ── 法人淨買賣超（供高檔出貨過濾，含前日資料） ──
             _foreign_net, _trust_net = None, None
+            _prev_foreign_net, _prev_trust_net = None, None
             try:
                 import finlab_fetcher as _flf
-                _foreign_net, _trust_net = _flf.get_latest_institutional_net(sid)
+                _foreign_net, _trust_net, _prev_foreign_net, _prev_trust_net = _flf.get_institutional_net_2d(sid)
             except Exception:
                 pass
 
@@ -249,6 +250,8 @@ def scan_stocks(
                 # 法人淨買賣超（高檔出貨過濾用）
                 strat_kwargs["foreign_net"] = _foreign_net
                 strat_kwargs["trust_net"] = _trust_net
+                strat_kwargs["prev_foreign_net"] = _prev_foreign_net
+                strat_kwargs["prev_trust_net"] = _prev_trust_net
 
                 result = info.func(enriched, **strat_kwargs)
                 if result:

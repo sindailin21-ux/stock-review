@@ -177,10 +177,11 @@ def strategy_g_chu_entry(df: pd.DataFrame, industry: str = "", **kwargs) -> dict
     if volume <= vol_ma5 * 1.2:
         return None
 
-    # 5. 高檔出貨過濾：長黑K + 位階>70% + 法人賣超 → 排除
+    # 5. 高檔出貨過濾：長黑K + 位階>70% + 法人賣超，或法人誘多翻臉 → 排除
     foreign_net = kwargs.get("foreign_net")
     trust_net = kwargs.get("trust_net")
-    if check_distribution_top(df, foreign_net, trust_net):
+    if check_distribution_top(df, foreign_net, trust_net,
+                              kwargs.get("prev_foreign_net"), kwargs.get("prev_trust_net")):
         return None
 
     return {
@@ -563,10 +564,11 @@ def strategy_h_chu_best(df: pd.DataFrame, industry: str = "", **kwargs) -> dict 
     if bias >= 0.05:
         return None
 
-    # 7. 高檔出貨過濾：長黑K + 位階>70% + 法人賣超 → 排除
+    # 7. 高檔出貨過濾：長黑K + 位階>70% + 法人賣超，或法人誘多翻臉 → 排除
     foreign_net = kwargs.get("foreign_net")
     trust_net = kwargs.get("trust_net")
-    if check_distribution_top(df, foreign_net, trust_net):
+    if check_distribution_top(df, foreign_net, trust_net,
+                              kwargs.get("prev_foreign_net"), kwargs.get("prev_trust_net")):
         return None
 
     # ── 計算進場 / 出場價位 ──

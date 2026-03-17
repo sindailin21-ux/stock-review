@@ -347,6 +347,38 @@ def get_latest_institutional_net(stock_id: str) -> tuple:
     return (foreign_net, trust_net)
 
 
+def get_institutional_net_2d(stock_id: str) -> tuple:
+    """
+    回傳最近兩日法人淨買超（張）。
+    回傳 (foreign_net, trust_net, prev_foreign_net, prev_trust_net)
+    """
+    if not _cache:
+        return (None, None, None, None)
+
+    sid = str(stock_id)
+    foreign_wide = _cache.get("foreign_net")
+    trust_wide = _cache.get("trust_net")
+
+    foreign_net, trust_net = None, None
+    prev_foreign_net, prev_trust_net = None, None
+
+    if foreign_wide is not None and sid in foreign_wide.columns:
+        vals = foreign_wide[sid].dropna()
+        if len(vals) >= 1:
+            foreign_net = int(vals.iloc[-1]) // 1000
+        if len(vals) >= 2:
+            prev_foreign_net = int(vals.iloc[-2]) // 1000
+
+    if trust_wide is not None and sid in trust_wide.columns:
+        vals = trust_wide[sid].dropna()
+        if len(vals) >= 1:
+            trust_net = int(vals.iloc[-1]) // 1000
+        if len(vals) >= 2:
+            prev_trust_net = int(vals.iloc[-2]) // 1000
+
+    return (foreign_net, trust_net, prev_foreign_net, prev_trust_net)
+
+
 # ═══════════════════════════════════════════════════════════
 # 營收
 # ═══════════════════════════════════════════════════════════
