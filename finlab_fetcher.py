@@ -270,7 +270,7 @@ def get_enriched_df(stock_id: str, months: int = 5) -> pd.DataFrame:
 def get_price_df(stock_id: str, months: int = 5) -> pd.DataFrame:
     """
     從快取取純 OHLCV DataFrame（不含 s_* 指標）。
-    用於需要合併即時報價後重算指標的場景（朱家泓覆盤 / H策略診斷）。
+    用於需要合併即時報價後重算指標的場景（持股覆盤 / 買入判斷）。
     """
     if not _cache:
         return pd.DataFrame()

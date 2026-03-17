@@ -3,10 +3,13 @@ app.py
 台股覆盤工具 v1 - 整合版 Flask 應用
 
 路由架構：
-  /                    單支股票查詢頁
+  /                    重導到 /screener
   /portfolio           持股清單管理頁
-  /batch               批次分析頁
-  /screener            選股頁
+  /screener            每日選股頁
+  /chu-review          持股覆盤頁
+  /h-diagnose          買入判斷頁
+  /query               單支股票查詢頁（隱藏，不在導覽列）
+  /batch               批次分析頁（隱藏，不在導覽列）
 
   GET  /api/portfolio          取得持股清單
   POST /api/portfolio          新增/更新單筆
@@ -802,7 +805,7 @@ def _run_intraday_scan():
                         "vol_ratio": result.get("vol_ratio"),
                         "industry": industry,
                         "triggered": ["H"],
-                        "strategy_labels": "朱家泓最佳⭐",
+                        "strategy_labels": "最佳進場⭐",
                         "strategy_details": {"H": result},
                         "profitability": profit_reason,
                         "pool": None,
@@ -845,7 +848,7 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans TC',sans-seri
 """
 
 def _nav(active: str) -> str:
-    pages = [("/", "查詢"), ("/portfolio", "持股管理"), ("/batch", "批次分析"), ("/screener", "選股"), ("/chu-review", "朱家泓覆盤"), ("/h-diagnose", "H策略診斷")]
+    pages = [("/portfolio", "持股管理"), ("/screener", "每日選股"), ("/chu-review", "持股覆盤"), ("/h-diagnose", "買入判斷")]
     links = "".join(
         f'<a href="{url}" class="{"active" if active==url else ""}">{label}</a>'
         for url, label in pages
@@ -1397,13 +1400,13 @@ function sendBatchTg(){
 </html>"""
 
 
-# ── 朱家泓覆盤頁 ─────────────────────────────────────────────
+# ── 持股覆盤頁 ─────────────────────────────────────────────
 CHU_REVIEW_PAGE = """<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>朱家泓覆盤</title>
+<title>持股覆盤</title>
 __NAV_STYLE__
 <style>
 .page{padding:24px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:16px;}
@@ -1477,9 +1480,9 @@ tbody td{padding:8px;border-bottom:1px solid var(--border);vertical-align:top;}
 __NAV__
 <div class="page">
   <div class="card">
-    <div class="card-title">朱家泓老師 — 每日持股覆盤</div>
+    <div class="card-title">每日持股覆盤</div>
     <div style="font-size:12px;color:var(--text2);line-height:1.6;">
-      依據朱家泓老師的操作紀律，逐檔檢查持股的出場訊號：<br>
+      逐檔檢查持股的出場訊號：<br>
       <b>減碼</b>：收盤跌破 5 日線 ｜ <b>警覺</b>：高位長黑K / 放量十字星 ｜ <b>落袋</b>：5 日線走平
     </div>
     <div class="ctrl-row">
@@ -1824,13 +1827,13 @@ document.addEventListener('keydown',function(e){
 """
 
 
-# ── H策略即時診斷頁 ──────────────────────────────────────────
+# ── 買入判斷頁 ──────────────────────────────────────────
 H_DIAGNOSE_PAGE = """<!DOCTYPE html>
 <html lang="zh-TW">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>H策略診斷</title>
+<title>買入判斷</title>
 __NAV_STYLE__
 <style>
 .page{padding:24px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:16px;}
@@ -1910,7 +1913,7 @@ tbody td{padding:6px 8px;border-bottom:1px solid var(--border);vertical-align:mi
 __NAV__
 <div class="page">
   <div class="card">
-    <div class="card-title">Strategy H 即時診斷 — 朱家泓最佳進場條件</div>
+    <div class="card-title">買入判斷 — 最佳進場條件即時診斷</div>
     <div style="font-size:12px;color:var(--text2);line-height:1.6;">
       9 項進場條件逐條檢查：ADX 趨勢、DI 方向、RSI 動能、四線多排、斜率、MA20 扣抵、站上 MA5、放量確認、乖離率。<br>
       使用即時盤價（盤中 9:00-13:30）或最新收盤價進行診斷。
@@ -2232,7 +2235,7 @@ function renderTable(rows){
     }
 
     var row='<tr>'+
-      '<td class="td-code"><a href="/?q='+r.stock_id+'" target="_blank">'+r.stock_id+'</a></td>'+
+      '<td class="td-code"><a href="/query?q='+r.stock_id+'" target="_blank">'+r.stock_id+'</a></td>'+
       '<td style="white-space:nowrap;">'+r.name+'</td>'+
       '<td><a class="badge strat-h report-link" style="text-decoration:none;cursor:pointer;" onclick="openDetail('+idx+')">🔍 H 診斷</a></td>'+
       '<td class="td-num">'+priceHtml+'</td>'+
@@ -2272,7 +2275,7 @@ SCREENER_PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>選股</title>
+<title>每日選股</title>
 __NAV_STYLE__
 <style>
 .page{padding:24px;max-width:1400px;margin:0 auto;display:flex;flex-direction:column;gap:16px;}
@@ -2458,7 +2461,7 @@ __NAV__
         <input type="checkbox" id="stratG" value="G" checked>
         <span class="strat-badge strat-g">G</span>
         <div class="strat-info">
-          <span class="strat-name">朱家泓進場</span>
+          <span class="strat-name">主力進場</span>
           <span class="strat-desc">全產業：頭頭高底底高 + 四線多排 + MA20扣抵值</span>
         </div>
       </label>
@@ -2466,7 +2469,7 @@ __NAV__
         <input type="checkbox" id="stratH" value="H" checked>
         <span class="strat-badge strat-h">H</span>
         <div class="strat-info">
-          <span class="strat-name">朱家泓最佳⭐</span>
+          <span class="strat-name">最佳進場⭐</span>
           <span class="strat-desc">ADX(8)趨勢+RSI濾鏡+四線多排（回測年化+37%）</span>
         </div>
       </label>
@@ -2664,7 +2667,7 @@ function renderTable(rows){
     var trStyle=r.pullback_buy?' style="background:rgba(255,100,0,.06);"':'';
     // ── 第一列：主要資訊 ──
     var row1='<tr'+trStyle+'>'+
-      '<td class="td-code"><a href="/?q='+r.stock_id+'" target="_blank" class="code-link">'+r.stock_id+'</a></td>'+
+      '<td class="td-code"><a href="/query?q='+r.stock_id+'" target="_blank" class="code-link">'+r.stock_id+'</a></td>'+
       '<td>'+r.name+'</td>'+
       '<td>'+indBadge+'</td>'+
       '<td>'+stratBadges+' <span style="font-size:11px;color:var(--text2)">'+r.strategy_labels+'</span>'+pbTag+'</td>'+
@@ -3087,8 +3090,15 @@ def _render(template: str, nav_active: str) -> str:
 
 
 @app.route("/")
+def page_root():
+    """首頁重導到每日選股"""
+    from flask import redirect
+    return redirect("/screener")
+
+
+@app.route("/query")
 def page_query():
-    return _render(QUERY_PAGE, "/"), 200, {"Content-Type": "text/html; charset=utf-8"}
+    return _render(QUERY_PAGE, "/query"), 200, {"Content-Type": "text/html; charset=utf-8"}
 
 
 @app.route("/portfolio")
@@ -3499,7 +3509,7 @@ def api_telegram_batch():
 
 
 # ═══════════════════════════════════════════════════════════
-# 路由：朱家泓覆盤 API（背景線程 + polling）
+# 路由：持股覆盤 API（背景線程 + polling）
 # ═══════════════════════════════════════════════════════════
 
 _chu_review_status = {
@@ -3527,7 +3537,7 @@ def _run_chu_review_bg(stock_ids):
         discover_strategies()
         chu_info = get_strategy("G")
         if chu_info is None or chu_info.review_func is None:
-            _chu_review_status["error"] = "朱家泓覆盤策略未註冊"
+            _chu_review_status["error"] = "持股覆盤策略未註冊"
             return
 
         _chu_review_status["current"] = "載入產業分類..."
@@ -3633,7 +3643,7 @@ def _run_chu_review_bg(stock_ids):
                     summary[st] += 1
 
             except Exception as e:
-                print(f"朱家泓覆盤 {sid} 失敗：{e}")
+                print(f"持股覆盤 {sid} 失敗：{e}")
                 reviews.append({
                     "stock_id": sid, "name": sid, "close": None, "change_pct": 0,
                     "review": {"status": "healthy", "signals": [], "ma_status": {}, "k_bar": {}, "summary": f"覆盤失敗：{e}"},
@@ -3690,7 +3700,7 @@ def api_chu_review_status():
 
 
 # ═══════════════════════════════════════════════════════════
-# 路由：H策略即時診斷 API（背景線程 + polling）
+# 路由：買入判斷 API（背景線程 + polling）
 # ═══════════════════════════════════════════════════════════
 
 _h_diagnose_status = {
@@ -3839,7 +3849,7 @@ def _run_h_diagnose_bg(stock_ids):
                 results.append(item)
 
             except Exception as e:
-                print(f"H策略診斷 {sid} 失敗：{e}")
+                print(f"買入判斷 {sid} 失敗：{e}")
                 results.append({
                     "stock_id": sid, "name": sid,
                     "close": None,

@@ -186,7 +186,7 @@ def strategy_g_chu_entry(df: pd.DataFrame, industry: str = "", **kwargs) -> dict
 
     return {
         "strategy": "G",
-        "label": "朱家泓進場",
+        "label": "主力進場",
         "swing_pattern": True,
         "ma_alignment": True,
         "ma_slopes": slopes,
@@ -460,7 +460,7 @@ def chu_daily_review(df: pd.DataFrame, **kwargs) -> dict:
 
     # ── 摘要 ──
     if pullback_triggered:
-        summary = "🎯 朱家泓：回後買上漲點 (黃金轉折)"
+        summary = "🎯 回後買上漲點 (黃金轉折)"
         if len(signals) > 1:
             other = "；".join(s["rule"] for s in signals[1:])
             summary += f"（同時：{other}）"
@@ -581,7 +581,7 @@ def strategy_h_chu_best(df: pd.DataFrame, industry: str = "", **kwargs) -> dict 
 
     return {
         "strategy": "H",
-        "label": "朱家泓最佳",
+        "label": "最佳進場",
         "adx": round(adx, 1),
         "plus_di": round(plus_di, 1),
         "minus_di": round(minus_di, 1),
@@ -781,7 +781,7 @@ def diagnose_h_strategy(df: pd.DataFrame, industry: str = "", **kwargs) -> dict:
 
 register(StrategyInfo(
     code="G",
-    name="朱家泓進場",
+    name="主力進場",
     description="頭頭高底底高 + 四線多排 + MA20扣抵值",
     category="master_chu",
     pool=None,
@@ -795,7 +795,7 @@ register(StrategyInfo(
 
 register(StrategyInfo(
     code="H",
-    name="朱家泓最佳",
+    name="最佳進場",
     description="ADX(8)趨勢 + RSI濾鏡 + 四線多排（回測年化+37%）",
     category="master_chu",
     pool=None,

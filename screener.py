@@ -272,7 +272,7 @@ def scan_stocks(
                     labels += " ⚡轉機潛力股"
                     print(f"  ⚡ {sid} {name} 轉機潛力股（虧損收斂 + 營收爆發）")
 
-                # 策略 E 觸發時，加測朱家泓回檔買點（含四步診斷）
+                # 策略 E 觸發時，加測回檔買點（含四步診斷）
                 pullback_buy = False
                 pullback_steps = []
                 if "E" in triggered:
@@ -282,7 +282,7 @@ def scan_stocks(
                     if pb["triggered"]:
                         pullback_buy = True
                         labels += " 🎯回後買上漲點"
-                        print(f"  🎯 {sid} {name} 朱家泓回後買上漲點 (黃金轉折)")
+                        print(f"  🎯 {sid} {name} 回後買上漲點 (黃金轉折)")
 
                 # 決定追蹤池：Pool B 優先於 Pool A
                 pool = None
