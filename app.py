@@ -1582,6 +1582,8 @@ var CHU_COLS=[
   {key:'name',      label:'名稱'},
   {key:'close',     label:'收盤'},
   {key:'change_pct',label:'漲跌%'},
+  {key:'foreign_net',label:'外資'},
+  {key:'trust_net', label:'投信'},
   {key:'status',    label:'狀態'},
   {key:'summary',   label:'訊號摘要'},
   {key:'alignment', label:'均線排列'},
@@ -1624,6 +1626,14 @@ function _renderChuTable(){
     html+='<td>'+r.name+'</td>';
     html+='<td class="td-num">'+(r.close?r.close.toFixed(2):'-')+'</td>';
     html+='<td><span class="badge '+chgCls+'">'+(chg>0?'+':'')+chg.toFixed(2)+'%</span></td>';
+
+    // 外資、投信買賣超（張）
+    var fn=r.foreign_net, tn=r.trust_net;
+    var fnCls=fn>0?'badge-green':fn<0?'badge-red':'badge-gray';
+    var tnCls=tn>0?'badge-green':tn<0?'badge-red':'badge-gray';
+    html+='<td><span class="badge '+fnCls+'">'+(fn!=null?fn.toLocaleString():'-')+'</span></td>';
+    html+='<td><span class="badge '+tnCls+'">'+(tn!=null?tn.toLocaleString():'-')+'</span></td>';
+
     html+='<td><span class="badge '+cfg.badge+'">'+cfg.icon+' '+cfg.label+'</span></td>';
     html+='<td style="font-size:12px;">'+rev.summary+'</td>';
 
@@ -1638,7 +1648,7 @@ function _renderChuTable(){
     html+='</tr>';
 
     // detail panel
-    html+='<tr id="detailRow'+idx+'"><td colspan="8" style="padding:0;border:none;">';
+    html+='<tr id="detailRow'+idx+'"><td colspan="10" style="padding:0;border:none;">';
     html+='<div class="detail-panel" id="detail'+idx+'">';
     html+=renderDetail(r, rev);
     html+='</div></td></tr>';
@@ -3591,9 +3601,14 @@ def _run_chu_review_bg(stock_ids):
                     name = holding.get("name", name)
 
                 review = chu_info.review_func(enriched)
+
+                # 法人買賣超（張）
+                foreign_net, trust_net = finlab_fetcher.get_latest_institutional_net(sid)
+
                 review_item = {
                     "stock_id": sid, "name": name, "industry": ind_map.get(sid, ""),
                     "close": close, "change_pct": change_pct, "review": review,
+                    "foreign_net": foreign_net, "trust_net": trust_net,
                 }
                 if rt_time:
                     review_item["rt_time"] = rt_time
