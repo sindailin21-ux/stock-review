@@ -1503,6 +1503,10 @@ __NAV__
   <div id="resultArea"></div>
 </div>
 <script>
+var _marketMap={};
+fetch('/api/market-map').then(function(r){return r.json();}).then(function(d){_marketMap=d;}).catch(function(){});
+function tvUrl(sid){var ex=_marketMap[sid]==='otc'?'TPEX':'TWSE';return 'https://www.tradingview.com/chart/?symbol='+ex+'%3A'+sid;}
+
 function loadFromPortfolio(){
   document.getElementById('statusNote').textContent='載入持股中...';
   fetch('/api/portfolio')
@@ -1634,7 +1638,7 @@ function _renderChuTable(){
     var chgCls=chg>0?'badge-green':chg<0?'badge-red':'badge-gray';
 
     html+='<tr class="clickable-row" onclick="toggleDetail('+idx+')">';
-    html+='<td style="font-weight:600;"><a href="https://www.tradingview.com/chart/?symbol=TWSE%3A'+r.stock_id+'" target="_blank" style="color:inherit;text-decoration:none;" title="開啟 TradingView 線圖">'+r.stock_id+'</a></td>';
+    html+='<td style="font-weight:600;"><a href="'+tvUrl(r.stock_id)+'" target="_blank" style="color:inherit;text-decoration:none;" title="開啟 TradingView 線圖">'+r.stock_id+'</a></td>';
     html+='<td>'+r.name+'</td>';
     html+='<td class="td-num">'+(r.close?r.close.toFixed(2):'-')+'</td>';
     html+='<td><span class="badge '+chgCls+'">'+(chg>0?'+':'')+chg.toFixed(2)+'%</span></td>';
@@ -1938,6 +1942,10 @@ __NAV__
 </div>
 
 <script>
+var _marketMap={};
+fetch('/api/market-map').then(function(r){return r.json();}).then(function(d){_marketMap=d;}).catch(function(){});
+function tvUrl(sid){var ex=_marketMap[sid]==='otc'?'TPEX':'TWSE';return 'https://www.tradingview.com/chart/?symbol='+ex+'%3A'+sid;}
+
 function loadFromPortfolio(){
   document.getElementById('statusNote').textContent='載入持股中...';
   fetch('/api/portfolio')
@@ -2098,7 +2106,7 @@ function renderDetail(r){
 
   // 標題
   var html='<div class="modal-title">';
-  html+='<span><a href="https://www.tradingview.com/chart/?symbol=TWSE%3A'+r.stock_id+'" target="_blank" style="color:inherit;text-decoration:underline;" title="開啟 TradingView 線圖">'+r.stock_id+'</a> '+r.name+'</span>';
+  html+='<span><a href="'+tvUrl(r.stock_id)+'" target="_blank" style="color:inherit;text-decoration:underline;" title="開啟 TradingView 線圖">'+r.stock_id+'</a> '+r.name+'</span>';
   if(allPass){
     html+='<span style="background:rgba(52,211,153,.2);color:#34d399;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">ALL PASS</span>';
   }else{
@@ -2235,7 +2243,7 @@ function renderTable(rows){
     }
 
     var row='<tr>'+
-      '<td class="td-code"><a href="https://www.tradingview.com/chart/?symbol=TWSE%3A'+r.stock_id+'" target="_blank" title="開啟 TradingView 線圖">'+r.stock_id+'</a></td>'+
+      '<td class="td-code"><a href="'+tvUrl(r.stock_id)+'" target="_blank" title="開啟 TradingView 線圖">'+r.stock_id+'</a></td>'+
       '<td style="white-space:nowrap;">'+r.name+'</td>'+
       '<td><a class="badge strat-h report-link" style="text-decoration:none;cursor:pointer;" onclick="openDetail('+idx+')">🔍 H 診斷</a></td>'+
       '<td class="td-num">'+priceHtml+'</td>'+
@@ -2523,6 +2531,11 @@ var pollTimer=null;
 var _allRows=[];
 var _sortCol='';
 var _sortAsc=true;
+var _marketMap={};
+
+// 載入市場別對照表（TradingView 連結用）
+fetch('/api/market-map').then(function(r){return r.json();}).then(function(d){_marketMap=d;}).catch(function(){});
+function tvUrl(sid){var ex=_marketMap[sid]==='otc'?'TPEX':'TWSE';return 'https://www.tradingview.com/chart/?symbol='+ex+'%3A'+sid;}
 
 // 初始化日期為今天
 (function(){
@@ -2667,7 +2680,7 @@ function renderTable(rows){
     var trStyle=r.pullback_buy?' style="background:rgba(255,100,0,.06);"':'';
     // ── 第一列：主要資訊 ──
     var row1='<tr'+trStyle+'>'+
-      '<td class="td-code"><a href="https://www.tradingview.com/chart/?symbol=TWSE%3A'+r.stock_id+'" target="_blank" class="code-link" title="開啟 TradingView 線圖">'+r.stock_id+'</a></td>'+
+      '<td class="td-code"><a href="'+tvUrl(r.stock_id)+'" target="_blank" class="code-link" title="開啟 TradingView 線圖">'+r.stock_id+'</a></td>'+
       '<td>'+r.name+'</td>'+
       '<td>'+indBadge+'</td>'+
       '<td>'+stratBadges+' <span style="font-size:11px;color:var(--text2)">'+r.strategy_labels+'</span>'+pbTag+'</td>'+
@@ -2970,7 +2983,7 @@ function renderHDiagContent(r){
   var allPass=d.passed;
 
   var html='<div class="modal-title">';
-  html+='<span><a href="https://www.tradingview.com/chart/?symbol=TWSE%3A'+r.stock_id+'" target="_blank" style="color:inherit;text-decoration:underline;" title="開啟 TradingView 線圖">'+r.stock_id+'</a> '+r.name+'</span>';
+  html+='<span><a href="'+tvUrl(r.stock_id)+'" target="_blank" style="color:inherit;text-decoration:underline;" title="開啟 TradingView 線圖">'+r.stock_id+'</a> '+r.name+'</span>';
   if(allPass){
     html+='<span style="background:rgba(52,211,153,.2);color:#34d399;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">ALL PASS</span>';
   }else{
@@ -3313,6 +3326,25 @@ def api_intraday_status():
         "error":    _intraday_status["error"],
         "rows":     _intraday_status["rows"],
     })
+
+
+# ═══════════════════════════════════════════════════════════
+# 路由：市場別 API（TradingView 連結用）
+# ═══════════════════════════════════════════════════════════
+
+@app.route("/api/market-map", methods=["GET"])
+def api_market_map():
+    """回傳 stock_id → 市場別 對照（sii/otc/rotc），用於前端產生 TradingView 連結。"""
+    import finlab_fetcher
+    m = finlab_fetcher.get_company_market_map()
+    if not m:
+        # 快取尚未載入，嘗試載入
+        try:
+            finlab_fetcher.load_daily_cache()
+            m = finlab_fetcher.get_company_market_map()
+        except Exception:
+            pass
+    return jsonify(m)
 
 
 # ═══════════════════════════════════════════════════════════

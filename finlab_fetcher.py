@@ -157,19 +157,24 @@ def load_daily_cache(target_date: str | None = None, status: dict | None = None)
             _sid_col = "stock_id" if "stock_id" in _company_info.columns else "symbol"
             _name_map = {}
             _ind_map = {}
+            _market_map = {}  # stock_id → 'sii'(上市) / 'otc'(上櫃) / 'rotc'(興櫃)
             for _, row in _company_info.iterrows():
                 sid = str(row.get(_sid_col, "")).strip()
                 if not sid or len(sid) != 4:
                     continue
                 name = str(row.get("公司簡稱", "")).strip()
                 ind = str(row.get("產業類別", "")).strip()
+                mkt = str(row.get("市場別", "")).strip()
                 if name and name != "nan":
                     _name_map[sid] = name
                 if ind and ind != "nan":
                     _ind_map[sid] = ind
+                if mkt and mkt != "nan":
+                    _market_map[sid] = mkt
             _cache["company_name"] = _name_map
             _cache["company_industry"] = _ind_map
-            print(f"  📂 公司名稱：{len(_name_map)} 檔，產業分類：{len(_ind_map)} 檔")
+            _cache["company_market"] = _market_map
+            print(f"  📂 公司名稱：{len(_name_map)} 檔，產業分類：{len(_ind_map)} 檔，市場別：{len(_market_map)} 檔")
     except Exception as e:
         print(f"  ⚠️ 公司基本資訊載入失敗：{e}")
 
@@ -543,6 +548,13 @@ def get_company_industry_map() -> dict:
     if not _cache:
         return {}
     return _cache.get("company_industry", {})
+
+
+def get_company_market_map() -> dict:
+    """回傳 stock_id → 市場別 對照表（sii=上市, otc=上櫃, rotc=興櫃）。"""
+    if not _cache:
+        return {}
+    return _cache.get("company_market", {})
 
 
 def reset_cache():
