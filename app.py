@@ -383,11 +383,12 @@ def _run_screener(strategies: list, target_date: str = None, force_refresh: bool
 
         cache_info = finlab_fetcher.get_cache_info()
         _screener_status["cache_info"] = {
-            "from_cache": True,
+            "from_cache": not force_refresh,
             "cache_time": _dt.now().strftime("%Y-%m-%d %H:%M:%S"),
             "cache_date": cache_date,
             "source": "FinLab",
             "n_stocks": cache_info.get("n_stocks", 0),
+            "last_data_date": cache_info.get("last_data_date", ""),
         }
 
         if _screener_status["cancel"]:
@@ -2606,11 +2607,12 @@ function showCacheInfo(info){
   var txt=document.getElementById('cacheInfoText');
   if(!info){el.style.display='none';return;}
   el.style.display='block';
+  var dataDate=info.last_data_date?' | 資料最後日期：<b>'+info.last_data_date+'</b>':'';
   if(info.from_cache){
-    txt.innerHTML='📦 <span style="color:#f59e0b;font-weight:600;">使用快取資料</span>（建立時間：'+info.cache_time+'）'
+    txt.innerHTML='📦 <span style="color:#f59e0b;font-weight:600;">使用快取資料</span>（建立時間：'+info.cache_time+dataDate+'）'
       +'<span style="margin-left:8px;color:var(--text2)">若需最新資料，請勾選「🔄 強制重抓資料」重新掃描</span>';
   }else{
-    txt.innerHTML='✅ <span style="color:#10b981;font-weight:600;">即時抓取資料</span>（抓取時間：'+info.cache_time+'）';
+    txt.innerHTML='✅ <span style="color:#10b981;font-weight:600;">即時抓取資料</span>（抓取時間：'+info.cache_time+dataDate+'）';
   }
 }
 

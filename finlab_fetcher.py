@@ -513,8 +513,13 @@ def reset_cache():
 
 def get_cache_info() -> dict:
     """回傳快取資訊（供 UI 顯示）。"""
+    last_data_date = None
+    close_wide = _cache.get("close")
+    if close_wide is not None and not close_wide.empty:
+        last_data_date = str(close_wide.index[-1])[:10]
     return {
         "date": _cache_date,
         "loaded": bool(_cache),
-        "n_stocks": len(_cache.get("close", {}).columns) if _cache.get("close") is not None else 0,
+        "n_stocks": len(close_wide.columns) if close_wide is not None else 0,
+        "last_data_date": last_data_date,
     }
