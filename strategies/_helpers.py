@@ -92,6 +92,44 @@ def check_latest_day_buying(inst_df: pd.DataFrame, investor_type: str) -> bool:
     return False
 
 
+def check_distribution_top(df: pd.DataFrame, foreign_net: int | None, trust_net: int | None) -> bool:
+    """
+    高檔出貨過濾：長黑K + 位階 > 70% + 法人（外資或投信）淨賣超 → True（應排除）。
+    三個條件全部成立才回傳 True。
+    """
+    if len(df) < 60:
+        return False
+
+    last = df.iloc[-1]
+    close = float(last["close"])
+    open_ = float(last["open"])
+
+    # 1. 長黑K：收黑 且 實體 > 3%
+    if close >= open_:
+        return False
+    body_pct = (open_ - close) / open_ * 100
+    if body_pct <= 3:
+        return False
+
+    # 2. 位階 > 70%（近 60 日高低區間）
+    window = df.tail(60)
+    high_60 = float(window["high"].max())
+    low_60 = float(window["low"].min())
+    if high_60 == low_60:
+        return False
+    position = (close - low_60) / (high_60 - low_60) * 100
+    if position <= 70:
+        return False
+
+    # 3. 法人淨賣超（外資或投信任一）
+    foreign_selling = foreign_net is not None and foreign_net < 0
+    trust_selling = trust_net is not None and trust_net < 0
+    if not (foreign_selling or trust_selling):
+        return False
+
+    return True
+
+
 def detect_swing_highs_lows(df: pd.DataFrame, lookback: int = 40) -> dict | None:
     """
     偵測近 `lookback` 根 K 線的擺盪高低點，用於判斷「頭頭高底底高」型態。

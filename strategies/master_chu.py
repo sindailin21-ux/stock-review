@@ -19,7 +19,7 @@ import pandas as pd
 import numpy as np
 
 from strategies import register, StrategyInfo
-from strategies._helpers import detect_swing_highs_lows
+from strategies._helpers import detect_swing_highs_lows, check_distribution_top
 
 
 # ═══════════════════════════════════════════════════════════
@@ -175,6 +175,12 @@ def strategy_g_chu_entry(df: pd.DataFrame, industry: str = "", **kwargs) -> dict
     if close <= ma5:
         return None
     if volume <= vol_ma5 * 1.2:
+        return None
+
+    # 5. 高檔出貨過濾：長黑K + 位階>70% + 法人賣超 → 排除
+    foreign_net = kwargs.get("foreign_net")
+    trust_net = kwargs.get("trust_net")
+    if check_distribution_top(df, foreign_net, trust_net):
         return None
 
     return {
@@ -555,6 +561,12 @@ def strategy_h_chu_best(df: pd.DataFrame, industry: str = "", **kwargs) -> dict 
     # 6. 乖離率 < 5%（回測最佳，避免追高）
     bias = (close - ma5) / ma5
     if bias >= 0.05:
+        return None
+
+    # 7. 高檔出貨過濾：長黑K + 位階>70% + 法人賣超 → 排除
+    foreign_net = kwargs.get("foreign_net")
+    trust_net = kwargs.get("trust_net")
+    if check_distribution_top(df, foreign_net, trust_net):
         return None
 
     # ── 計算進場 / 出場價位 ──

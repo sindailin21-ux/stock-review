@@ -223,6 +223,14 @@ def scan_stocks(
                 except Exception:
                     pass
 
+            # ── 法人淨買賣超（供高檔出貨過濾） ──
+            _foreign_net, _trust_net = None, None
+            try:
+                import finlab_fetcher as _flf
+                _foreign_net, _trust_net = _flf.get_latest_institutional_net(sid)
+            except Exception:
+                pass
+
             # ── 透過 registry 逐策略檢查 ──
             triggered = []
             details = {}
@@ -238,6 +246,9 @@ def scan_stocks(
                     strat_kwargs["industry"] = industry
                 if info.needs_institutional:
                     strat_kwargs["inst_df"] = inst_df
+                # 法人淨買賣超（高檔出貨過濾用）
+                strat_kwargs["foreign_net"] = _foreign_net
+                strat_kwargs["trust_net"] = _trust_net
 
                 result = info.func(enriched, **strat_kwargs)
                 if result:
