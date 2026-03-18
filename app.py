@@ -45,7 +45,7 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+    load_dotenv(override=True)
 except ImportError:
     pass
 
@@ -1780,7 +1780,7 @@ function openReport(sid, name, industry, evt){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({stock_id:sid, name:name, industry:industry})
   })
-  .then(function(r){if(!r.ok)throw new Error('伺服器錯誤 ('+r.status+')');return r.json();})
+  .then(function(r){return r.json().then(function(d){if(!r.ok){throw new Error(d.error||'伺服器錯誤 ('+r.status+')');}return d;});})
   .then(function(d){
     if(d.error){
       content.innerHTML='<div class="modal-loading" style="color:var(--red);">❌ '+d.error+'</div>';
@@ -2906,7 +2906,7 @@ function openReport(sid, name, industry, evt){
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify({stock_id:sid, name:name, industry:industry})
   })
-  .then(function(r){if(!r.ok)throw new Error('伺服器錯誤 ('+r.status+')');return r.json();})
+  .then(function(r){return r.json().then(function(d){if(!r.ok){throw new Error(d.error||'伺服器錯誤 ('+r.status+')');}return d;});})
   .then(function(d){
     if(d.error){
       content.innerHTML='<div class="modal-loading" style="color:var(--red);">❌ '+d.error+'</div>';
@@ -2954,7 +2954,7 @@ function openHDiag(stockId){
   document.body.style.overflow='hidden';
   if(_hDiagTimer){clearInterval(_hDiagTimer);_hDiagTimer=null;}
   fetch('/api/h-diagnose/single/'+stockId,{method:'POST'})
-    .then(function(r){if(!r.ok)throw new Error('伺服器錯誤 ('+r.status+')');return r.json();})
+    .then(function(r){return r.json().then(function(d){if(!r.ok){throw new Error(d.error||'伺服器錯誤 ('+r.status+')');}return d;});})
     .then(function(d){
       if(d.error){content.innerHTML='<div style="padding:20px;color:var(--red);">❌ '+d.error+'</div>';return;}
       _hDiagTimer=setInterval(function(){
@@ -3472,6 +3472,8 @@ def api_industry_report():
         report = get_industry_report(stock_id, name, industry)
         return jsonify(report)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": f"產業報告生成失敗：{e}"}), 500
 
 
