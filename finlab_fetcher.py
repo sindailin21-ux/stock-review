@@ -132,6 +132,17 @@ def load_daily_cache(target_date: str | None = None, status: dict | None = None)
         "institutional_investors_trading_summary:投信買賣超股數"
     ))
 
+    # 【外資持股】
+    if status:
+        status["current"] = "FinLab：載入外資持股..."
+    print("📥 FinLab：載入外資持股...")
+    _cache["foreign_holding_shares"] = _trim(data.get(
+        "foreign_investors_shareholding:全體外資及陸資持有股數"
+    ))
+    _cache["foreign_holding_ratio"] = _trim(data.get(
+        "foreign_investors_shareholding:全體外資及陸資持股比率"
+    ))
+
     # 【營收】— 月頻資料不裁剪行數，但轉 float32
     if status:
         status["current"] = "FinLab：載入營收資料..."
@@ -441,6 +452,67 @@ def get_institutional_net_nd(stock_id: str, n: int = 3) -> list[tuple]:
         results.append((fn, tn, pfn, ptn))
 
     return results
+
+
+def get_institutional_chart_data(stock_id: str, days: int = 60) -> dict:
+    """
+    回傳法人買賣超折線圖資料（張）。
+    回傳 {dates: [...], foreign: [...], trust: [...], total: [...]}.
+    """
+    if not _cache:
+        return {"dates": [], "foreign": [], "trust": [], "total": []}
+
+    sid = str(stock_id)
+    foreign_wide = _cache.get("foreign_net")
+    trust_wide = _cache.get("trust_net")
+
+    dates, foreign, trust, total, close = [], [], [], [], []
+
+    f_series = foreign_wide[sid].dropna() if (foreign_wide is not None and sid in foreign_wide.columns) else pd.Series(dtype=float)
+    t_series = trust_wide[sid].dropna() if (trust_wide is not None and sid in trust_wide.columns) else pd.Series(dtype=float)
+
+    # 收盤價
+    close_wide = _cache.get("close")
+    c_series = close_wide[sid].dropna() if (close_wide is not None and sid in close_wide.columns) else pd.Series(dtype=float)
+
+    # Align on dates
+    if len(f_series) == 0 and len(t_series) == 0:
+        return {"dates": [], "foreign": [], "trust": [], "total": [], "close": []}
+
+    all_dates = f_series.index.union(t_series.index).sort_values()
+    if days > 0:
+        all_dates = all_dates[-days:]
+
+    for d in all_dates:
+        fn = int(f_series.get(d, 0)) // 1000
+        tn = int(t_series.get(d, 0)) // 1000
+        dates.append(d.strftime("%m/%d"))
+        foreign.append(fn)
+        trust.append(tn)
+        total.append(fn + tn)
+        cv = c_series.get(d)
+        close.append(round(float(cv), 2) if cv is not None and pd.notna(cv) else None)
+
+    # 外資最新持股資訊
+    fh_shares_wide = _cache.get("foreign_holding_shares")
+    fh_ratio_wide = _cache.get("foreign_holding_ratio")
+    fh_shares = None
+    fh_ratio = None
+    if fh_shares_wide is not None and sid in fh_shares_wide.columns:
+        s = fh_shares_wide[sid].dropna()
+        if len(s) > 0:
+            fh_shares = int(s.iloc[-1]) // 1000  # 轉張
+    if fh_ratio_wide is not None and sid in fh_ratio_wide.columns:
+        s = fh_ratio_wide[sid].dropna()
+        if len(s) > 0:
+            fh_ratio = round(float(s.iloc[-1]), 2)
+
+    return {
+        "dates": dates, "foreign": foreign, "trust": trust,
+        "total": total, "close": close,
+        "foreign_holding_shares": fh_shares,
+        "foreign_holding_ratio": fh_ratio,
+    }
 
 
 # ═══════════════════════════════════════════════════════════

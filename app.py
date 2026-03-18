@@ -1505,6 +1505,7 @@ __NAV__
 </div>
 <script>
 function tvUrl(sid){return 'https://www.wantgoo.com/stock/'+sid+'/technical-chart';}
+function openInstChart(sid,name){window.open("/institutional-chart-popup/"+sid+"?name="+encodeURIComponent(name||""),"inst_chart_"+sid,"width=750,height=480,scrollbars=no,resizable=yes");}
 
 function loadFromPortfolio(){
   document.getElementById('statusNote').textContent='載入持股中...';
@@ -1596,6 +1597,7 @@ var _chuSortAsc=true;
 var CHU_COLS=[
   {key:'stock_id',  label:'代號'},
   {key:'name',      label:'名稱'},
+  {key:'inst_chart',label:'法人軌跡'},
   {key:'close',     label:'收盤'},
   {key:'change_pct',label:'漲跌%'},
   {key:'foreign_net',label:'外資'},
@@ -1640,6 +1642,7 @@ function _renderChuTable(){
     html+='<tr class="clickable-row" onclick="toggleDetail('+idx+')">';
     html+='<td style="font-weight:600;"><a href="'+tvUrl(r.stock_id)+'" target="_blank" style="color:inherit;text-decoration:none;" title="開啟玩股網線圖">'+r.stock_id+'</a></td>';
     html+='<td>'+r.name+'</td>';
+    html+='<td style="text-align:center;"><span onclick="event.stopPropagation();openInstChart(&quot;'+r.stock_id+'&quot;,&quot;'+(r.name||'')+'&quot;)" style="cursor:pointer" title="法人買賣超圖">📊</span></td>';
     html+='<td class="td-num">'+(r.close?r.close.toFixed(2):'-')+'</td>';
     html+='<td><span class="badge '+chgCls+'">'+(chg>0?'+':'')+chg.toFixed(2)+'%</span></td>';
 
@@ -1666,7 +1669,7 @@ function _renderChuTable(){
     html+='</tr>';
 
     // detail panel
-    html+='<tr id="detailRow'+idx+'"><td colspan="10" style="padding:0;border:none;">';
+    html+='<tr id="detailRow'+idx+'"><td colspan="11" style="padding:0;border:none;">';
     html+='<div class="detail-panel" id="detail'+idx+'">';
     html+=renderDetail(r, rev);
     html+='</div></td></tr>';
@@ -2049,6 +2052,7 @@ function renderOverview(results){
 var COLS=[
   {key:'stock_id',    label:'代號'},
   {key:'name',        label:'名稱',      align:'left'},
+  {key:'inst_chart',  label:'法人軌跡',   align:'center'},
   {key:'h_diag',      label:'',          align:'center'},
   {key:'close',       label:'即時價',     align:'right'},
   {key:'passed_count',label:'通過',       align:'right'},
@@ -2106,7 +2110,7 @@ function renderDetail(r){
 
   // 標題
   var html='<div class="modal-title">';
-  html+='<span><a href="'+tvUrl(r.stock_id)+'" target="_blank" style="color:inherit;text-decoration:underline;" title="開啟玩股網線圖">'+r.stock_id+'</a> '+r.name+'</span>';
+  html+='<span><a href="'+tvUrl(r.stock_id)+'" target="_blank" style="color:inherit;text-decoration:underline;" title="開啟玩股網線圖">'+r.stock_id+'</a> <span onclick="openInstChart(&quot;'+r.stock_id+'&quot;,&quot;'+(r.name||'')+'&quot;)" style="cursor:pointer" title="法人買賣超圖">📊</span> '+r.name+'</span>';
   if(allPass){
     html+='<span style="background:rgba(52,211,153,.2);color:#34d399;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">ALL PASS</span>';
   }else{
@@ -2245,6 +2249,7 @@ function renderTable(rows){
     var row='<tr>'+
       '<td class="td-code"><a href="'+tvUrl(r.stock_id)+'" target="_blank" title="開啟玩股網線圖">'+r.stock_id+'</a></td>'+
       '<td style="white-space:nowrap;">'+r.name+'</td>'+
+      '<td style="text-align:center;"><span onclick="event.stopPropagation();openInstChart(&quot;'+r.stock_id+'&quot;,&quot;'+(r.name||'')+'&quot;)" style="cursor:pointer" title="法人買賣超圖">📊</span></td>'+
       '<td><a class="badge strat-h report-link" style="text-decoration:none;cursor:pointer;" onclick="openDetail('+idx+')">🔍 H 診斷</a></td>'+
       '<td class="td-num">'+priceHtml+'</td>'+
       '<td class="td-num"><span class="'+scoreCls+'">'+scoreLabel+'</span></td>'+
@@ -2532,6 +2537,7 @@ var _allRows=[];
 var _sortCol='';
 var _sortAsc=true;
 function tvUrl(sid){return 'https://www.wantgoo.com/stock/'+sid+'/technical-chart';}
+function openInstChart(sid,name){window.open("/institutional-chart-popup/"+sid+"?name="+encodeURIComponent(name||""),"inst_chart_"+sid,"width=750,height=480,scrollbars=no,resizable=yes");}
 
 // 初始化日期為今天
 (function(){
@@ -2642,6 +2648,7 @@ var AI_INDUSTRIES=['半導體業','電腦及週邊設備業','電子零組件業
 var COLS=[
   {key:'stock_id',       label:'代號'},
   {key:'name',           label:'名稱'},
+  {key:'inst_chart',     label:'法人軌跡'},
   {key:'industry',       label:'產業'},
   {key:'strategy_labels',label:'觸發策略'},
   {key:'pool',           label:'追蹤池'},
@@ -2649,7 +2656,7 @@ var COLS=[
   {key:'change_pct',     label:'漲跌%'},
   {key:'vol_ratio',      label:'量比'},
 ];
-var TOTAL_COLS=8;
+var TOTAL_COLS=9;
 
 function renderTable(rows){
   var wrap=document.getElementById('resultArea');
@@ -2678,6 +2685,7 @@ function renderTable(rows){
     var row1='<tr'+trStyle+'>'+
       '<td class="td-code"><a href="'+tvUrl(r.stock_id)+'" target="_blank" class="code-link" title="開啟玩股網線圖">'+r.stock_id+'</a></td>'+
       '<td>'+r.name+'</td>'+
+      '<td style="text-align:center;"><span onclick="event.stopPropagation();openInstChart(&quot;'+r.stock_id+'&quot;,&quot;'+(r.name||'')+'&quot;)" style="cursor:pointer" title="法人買賣超圖">📊</span></td>'+
       '<td>'+indBadge+'</td>'+
       '<td>'+stratBadges+' <span style="font-size:11px;color:var(--text2)">'+r.strategy_labels+'</span>'+pbTag+'</td>'+
       '<td>'+poolBadge+'</td>'+
@@ -2741,7 +2749,7 @@ function renderTable(rows){
     if(extras.length){
       row2='<tr'+trStyle+'>'+
         '<td colspan="3" style="border-top:none;padding:0;"></td>'+
-        '<td colspan="5" style="border-top:none;padding-top:0;padding-bottom:10px;">'+
+        '<td colspan="6" style="border-top:none;padding-top:0;padding-bottom:10px;">'+
         '<div style="display:flex;gap:6px;flex-wrap:wrap;">'+extras.join('')+'</div>'+
       '</td></tr>';
     }
@@ -2979,7 +2987,7 @@ function renderHDiagContent(r){
   var allPass=d.passed;
 
   var html='<div class="modal-title">';
-  html+='<span><a href="'+tvUrl(r.stock_id)+'" target="_blank" style="color:inherit;text-decoration:underline;" title="開啟玩股網線圖">'+r.stock_id+'</a> '+r.name+'</span>';
+  html+='<span><a href="'+tvUrl(r.stock_id)+'" target="_blank" style="color:inherit;text-decoration:underline;" title="開啟玩股網線圖">'+r.stock_id+'</a> <span onclick="openInstChart(&quot;'+r.stock_id+'&quot;,&quot;'+(r.name||'')+'&quot;)" style="cursor:pointer" title="法人買賣超圖">📊</span> '+r.name+'</span>';
   if(allPass){
     html+='<span style="background:rgba(52,211,153,.2);color:#34d399;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:700;">ALL PASS</span>';
   }else{
@@ -3750,6 +3758,82 @@ def api_chu_review_status():
         "error": _chu_review_status["error"],
         "result": _chu_review_status["result"],
     })
+
+
+# ═══════════════════════════════════════════════════════════
+# 路由：法人買賣超折線圖 API + 彈窗頁面
+# ═══════════════════════════════════════════════════════════
+
+INST_CHART_POPUP = """<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>{{ sid }} {{ name }} 法人買賣超</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+body{margin:0;padding:12px;font-family:sans-serif;background:#1a1a2e;color:#eee}
+select{padding:4px 8px;border-radius:4px;background:#16213e;color:#eee;border:1px solid #555;margin-left:8px}
+canvas{margin-top:8px}
+.hdr{display:flex;align-items:center;justify-content:space-between}
+</style></head><body>
+<div class="hdr">
+  <b>{{ sid }} {{ name }} 法人買賣超（張）</b>
+  <div>天數<select id="dd" onchange="load()">
+    <option value="20">20</option>
+    <option value="60" selected>60</option>
+    <option value="120">120</option>
+    <option value="0">全部</option>
+  </select></div>
+</div>
+<div id="holdingInfo" style="font-size:12px;color:#aaa;margin-top:4px;"></div>
+<canvas id="cv"></canvas>
+<script>
+var ch=null;
+function load(){
+  var d=document.getElementById("dd").value;
+  fetch("/api/institutional-chart/{{ sid }}?days="+d)
+  .then(function(r){return r.json()})
+  .then(function(j){
+    // 顯示外資持股
+    var hi=document.getElementById("holdingInfo");
+    if(j.foreign_holding_shares!=null){
+      hi.innerHTML="外資持股：<b style='color:#4fc3f7'>"+j.foreign_holding_shares.toLocaleString()+" 張</b>"+(j.foreign_holding_ratio!=null?" （"+j.foreign_holding_ratio+"%）":"");
+    }else{hi.innerHTML="";}
+    if(ch)ch.destroy();
+    ch=new Chart(document.getElementById("cv"),{
+      type:"line",
+      data:{labels:j.dates,datasets:[
+        {label:"外資",data:j.foreign,borderColor:"transparent",backgroundColor:"#4fc3f7",pointRadius:4,pointHoverRadius:6,showLine:false,yAxisID:"y"},
+        {label:"投信",data:j.trust,borderColor:"transparent",backgroundColor:"#ffb74d",pointRadius:4,pointHoverRadius:6,showLine:false,yAxisID:"y"},
+        {label:"收盤價",data:j.close,borderColor:"#e0e0e0",backgroundColor:"rgba(224,224,224,0.05)",borderWidth:2,pointRadius:0,fill:false,tension:0.3,yAxisID:"y1"}
+      ]},
+      options:{responsive:true,
+        plugins:{legend:{labels:{color:"#ccc",font:{size:11}}}},
+        scales:{
+          x:{ticks:{color:"#999",maxRotation:45,maxTicksLimit:15},grid:{color:"#333"}},
+          y:{position:"left",title:{display:true,text:"張數",color:"#999"},ticks:{color:"#999"},grid:{color:"#333"}},
+          y1:{position:"right",title:{display:true,text:"收盤價",color:"#999"},ticks:{color:"#999"},grid:{drawOnChartArea:false}}
+        }
+      }
+    });
+  }).catch(function(e){document.body.innerHTML="<p style=color:red>載入失敗: "+e+"</p>"});
+}
+load();
+</script></body></html>"""
+
+
+@app.route("/institutional-chart-popup/<stock_id>")
+def institutional_chart_popup(stock_id):
+    name = request.args.get("name", "")
+    return INST_CHART_POPUP.replace("{{ sid }}", stock_id).replace("{{ name }}", name)
+
+
+@app.route("/api/institutional-chart/<stock_id>", methods=["GET"])
+def api_institutional_chart(stock_id):
+    import finlab_fetcher
+    if not finlab_fetcher._cache:
+        finlab_fetcher.load_daily_cache()
+    days = request.args.get("days", 60, type=int)
+    data = finlab_fetcher.get_institutional_chart_data(stock_id, days=days)
+    return jsonify(data)
 
 
 # ═══════════════════════════════════════════════════════════
