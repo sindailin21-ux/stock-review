@@ -471,18 +471,23 @@ def get_institutional_chart_data(stock_id: str, days: int = 60) -> dict:
     f_series = foreign_wide[sid].dropna() if (foreign_wide is not None and sid in foreign_wide.columns) else pd.Series(dtype=float)
     t_series = trust_wide[sid].dropna() if (trust_wide is not None and sid in trust_wide.columns) else pd.Series(dtype=float)
 
-    # 收盤價
+    # 收盤價 + 均線
     close_wide = _cache.get("close")
     c_series = close_wide[sid].dropna() if (close_wide is not None and sid in close_wide.columns) else pd.Series(dtype=float)
+    sma5_wide = _cache.get("sma5")
+    sma20_wide = _cache.get("sma20")
+    s5_series = sma5_wide[sid].dropna() if (sma5_wide is not None and sid in sma5_wide.columns) else pd.Series(dtype=float)
+    s20_series = sma20_wide[sid].dropna() if (sma20_wide is not None and sid in sma20_wide.columns) else pd.Series(dtype=float)
 
     # Align on dates
     if len(f_series) == 0 and len(t_series) == 0:
-        return {"dates": [], "foreign": [], "trust": [], "total": [], "close": []}
+        return {"dates": [], "foreign": [], "trust": [], "total": [], "close": [], "sma5": [], "sma20": []}
 
     all_dates = f_series.index.union(t_series.index).sort_values()
     if days > 0:
         all_dates = all_dates[-days:]
 
+    sma5, sma20 = [], []
     for d in all_dates:
         fn = int(f_series.get(d, 0)) // 1000
         tn = int(t_series.get(d, 0)) // 1000
@@ -492,6 +497,10 @@ def get_institutional_chart_data(stock_id: str, days: int = 60) -> dict:
         total.append(fn + tn)
         cv = c_series.get(d)
         close.append(round(float(cv), 2) if cv is not None and pd.notna(cv) else None)
+        sv5 = s5_series.get(d)
+        sma5.append(round(float(sv5), 2) if sv5 is not None and pd.notna(sv5) else None)
+        sv20 = s20_series.get(d)
+        sma20.append(round(float(sv20), 2) if sv20 is not None and pd.notna(sv20) else None)
 
     # 外資最新持股資訊
     fh_shares_wide = _cache.get("foreign_holding_shares")
@@ -509,7 +518,7 @@ def get_institutional_chart_data(stock_id: str, days: int = 60) -> dict:
 
     return {
         "dates": dates, "foreign": foreign, "trust": trust,
-        "total": total, "close": close,
+        "total": total, "close": close, "sma5": sma5, "sma20": sma20,
         "foreign_holding_shares": fh_shares,
         "foreign_holding_ratio": fh_ratio,
     }

@@ -3803,7 +3803,9 @@ function load(){
       data:{labels:j.dates,datasets:[
         {label:"外資",data:j.foreign,borderColor:"transparent",backgroundColor:"#4fc3f7",pointRadius:4,pointHoverRadius:6,showLine:false,yAxisID:"y"},
         {label:"投信",data:j.trust,borderColor:"transparent",backgroundColor:"#ffb74d",pointRadius:4,pointHoverRadius:6,showLine:false,yAxisID:"y"},
-        {label:"收盤價",data:j.close,borderColor:"#e0e0e0",backgroundColor:"rgba(224,224,224,0.05)",borderWidth:2,pointRadius:0,fill:false,tension:0.3,yAxisID:"y1"}
+        {label:"收盤價",data:j.close,borderColor:"#e0e0e0",backgroundColor:"rgba(224,224,224,0.05)",borderWidth:2,pointRadius:0,fill:false,tension:0.3,yAxisID:"y1"},
+        {label:"MA5",data:j.sma5,borderColor:"#f06292",borderWidth:1,pointRadius:0,fill:false,tension:0.3,borderDash:[3,2],yAxisID:"y1"},
+        {label:"MA20",data:j.sma20,borderColor:"#66bb6a",borderWidth:1,pointRadius:0,fill:false,tension:0.3,borderDash:[3,2],yAxisID:"y1"}
       ]},
       options:{responsive:true,
         plugins:{legend:{labels:{color:"#ccc",font:{size:11}}}},
