@@ -3670,23 +3670,27 @@ def _run_chu_review_bg(stock_ids):
                 from strategies._helpers import check_distribution_top
                 dist_top = check_distribution_top(enriched, foreign_net, trust_net,
                                                   prev_foreign_net, prev_trust_net)
-                # Mode B 加強：最新一天賣超 + 近 5 天內有買超 + 近 5 天內有賣超 ≥ 最大買超量
+                # Mode B 加強：近 5 天內有買→賣翻臉，且賣超量超過動態門檻
                 if not dist_top:
-                    inst_nd = finlab_fetcher.get_institutional_net_nd(sid, n=5)
-                    # 外資（最新一天必須賣超）
-                    if foreign_net is not None and foreign_net < 0:
-                        f_buys = [f for f, _, _, _ in inst_nd if f is not None and f > 0]
-                        f_sells = [f for f, _, _, _ in inst_nd if f is not None and f < 0]
-                        if f_buys and f_sells:
-                            if max(abs(s) for s in f_sells) >= max(f_buys):
-                                dist_top = True
-                    # 投信（最新一天必須賣超）
-                    if not dist_top and trust_net is not None and trust_net < 0:
-                        t_buys = [t for _, t, _, _ in inst_nd if t is not None and t > 0]
-                        t_sells = [t for _, t, _, _ in inst_nd if t is not None and t < 0]
-                        if t_buys and t_sells:
-                            if max(abs(s) for s in t_sells) >= max(t_buys):
-                                dist_top = True
+                    inst_nd = finlab_fetcher.get_institutional_net_nd(sid, n=20)
+                    # 動態門檻：近 20 日法人淨買賣超絕對值平均的 50%
+                    f_abs = [abs(f) for f, _, _, _ in inst_nd if f is not None]
+                    t_abs = [abs(t) for _, t, _, _ in inst_nd if t is not None]
+                    f_thr = (sum(f_abs) / len(f_abs) * 0.5) if f_abs else 0
+                    t_thr = (sum(t_abs) / len(t_abs) * 0.5) if t_abs else 0
+                    ind5 = inst_nd[:5]
+                    # 外資：今日賣超 ≥ 動態門檻 + 近5天買→賣翻臉
+                    if foreign_net is not None and foreign_net < 0 and abs(foreign_net) >= f_thr:
+                        f_buys = [f for f, _, _, _ in ind5 if f is not None and f > 0]
+                        f_sells = [f for f, _, _, _ in ind5 if f is not None and f < 0]
+                        if f_buys and f_sells and max(abs(s) for s in f_sells) >= max(f_buys):
+                            dist_top = True
+                    # 投信：今日賣超 ≥ 動態門檻 + 近5天買→賣翻臉
+                    if not dist_top and trust_net is not None and trust_net < 0 and abs(trust_net) >= t_thr:
+                        t_buys = [t for _, t, _, _ in ind5 if t is not None and t > 0]
+                        t_sells = [t for _, t, _, _ in ind5 if t is not None and t < 0]
+                        if t_buys and t_sells and max(abs(s) for s in t_sells) >= max(t_buys):
+                            dist_top = True
 
                 review_item = {
                     "stock_id": sid, "name": name, "industry": ind_map.get(sid, ""),
@@ -3964,19 +3968,26 @@ def _run_h_diagnose_bg(stock_ids):
                     # 高檔出貨警示
                     from strategies._helpers import check_distribution_top
                     _dt = check_distribution_top(enriched, fn, tn, pfn, ptn)
-                    # Mode B 加強：最新一天賣超 + 近 5 天內有買超 + 近 5 天內有賣超 ≥ 最大買超量
+                    # Mode B 加強：近 5 天內有買→賣翻臉，且賣超量超過動態門檻
                     if not _dt:
-                        _ind = finlab_fetcher.get_institutional_net_nd(sid, n=5)
-                        if fn is not None and fn < 0:
-                            _fb = [f for f, _, _, _ in _ind if f is not None and f > 0]
-                            _fs = [f for f, _, _, _ in _ind if f is not None and f < 0]
+                        _ind = finlab_fetcher.get_institutional_net_nd(sid, n=20)
+                        # 動態門檻：近 20 日法人淨買賣超絕對值平均的 50%
+                        _f_abs = [abs(f) for f, _, _, _ in _ind if f is not None]
+                        _t_abs = [abs(t) for _, t, _, _ in _ind if t is not None]
+                        _f_thr = (sum(_f_abs) / len(_f_abs) * 0.5) if _f_abs else 0
+                        _t_thr = (sum(_t_abs) / len(_t_abs) * 0.5) if _t_abs else 0
+                        _ind5 = _ind[:5]
+
+                        # 外資：今日賣超 ≥ 動態門檻 + 近5天買→賣翻臉
+                        if fn is not None and fn < 0 and abs(fn) >= _f_thr:
+                            _fb = [f for f, _, _, _ in _ind5 if f is not None and f > 0]
+                            _fs = [f for f, _, _, _ in _ind5 if f is not None and f < 0]
                             if _fb and _fs and max(abs(s) for s in _fs) >= max(_fb):
                                 _dt = True
-                    if not _dt:
-                        if tn is not None and tn < 0:
-                            _ind = finlab_fetcher.get_institutional_net_nd(sid, n=5)
-                            _tb = [t for _, t, _, _ in _ind if t is not None and t > 0]
-                            _ts = [t for _, t, _, _ in _ind if t is not None and t < 0]
+                        # 投信：今日賣超 ≥ 動態門檻 + 近5天買→賣翻臉
+                        if not _dt and tn is not None and tn < 0 and abs(tn) >= _t_thr:
+                            _tb = [t for _, t, _, _ in _ind5 if t is not None and t > 0]
+                            _ts = [t for _, t, _, _ in _ind5 if t is not None and t < 0]
                             if _tb and _ts and max(abs(s) for s in _ts) >= max(_tb):
                                 _dt = True
                     item["dist_top"] = _dt
