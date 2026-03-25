@@ -4,7 +4,7 @@ AI 產業分析報告生成模組 — 使用 Claude API。
 
 功能：
 1. get_industry_report(ticker, name, industry) → 產業報告（含快取）
-2. get_investor_conference(ticker) → 法說會查詢（MOPS 公開資訊觀測站）
+2. get_monthly_revenue(ticker) → 月營收查詢（FinMind API）
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 import requests
 import pandas as pd
 
-from config import ANTHROPIC_API_KEY
+from config import ANTHROPIC_API_KEY, FINMIND_TOKEN
 
 # ═══════════════════════════════════════════════════════════
 # 快取設定
@@ -52,79 +52,87 @@ def _save_cache(ticker: str, report: dict):
 
 
 # ═══════════════════════════════════════════════════════════
-# 法說會查詢（MOPS 公開資訊觀測站）
+# 月營收查詢（FinMind API）
 # ═══════════════════════════════════════════════════════════
 
-def get_investor_conference(ticker: str) -> dict:
+def get_monthly_revenue(ticker: str) -> dict:
     """
-    嘗試從 MOPS 抓取法說會行事曆。
+    從 FinMind 抓取近 6 個月月營收。
     回傳 {
-        "source": "mops" | "ai",
-        "events": [{"date": ..., "company": ..., "title": ...}],
+        "source": "finmind" | "none",
+        "records": [{"year": 2026, "month": 2, "revenue": 1261313000}, ...],
+        "formatted": "2025/09: 12.09 億\n2025/10: ...",
         "note": "..."
     }
     """
     result = {
-        "source": "ai",
-        "events": [],
-        "note": "由 AI 推估（MOPS 查詢失敗或無資料）",
+        "source": "none",
+        "records": [],
+        "formatted": "",
+        "raw_html": "",
+        "note": "月營收資料查詢失敗",
     }
 
     try:
-        # MOPS 法說會查詢頁面
-        url = "https://mops.twse.com.tw/mops/web/t100sb02_q1"
-        today = datetime.now()
-        # 查詢近 30 天的法說會
-        start_date = (today - timedelta(days=7)).strftime("%Y%m%d")
-        end_date = (today + timedelta(days=30)).strftime("%Y%m%d")
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
-            "Referer": "https://mops.twse.com.tw/mops/web/t100sb02",
+        start = (datetime.now() - timedelta(days=240)).strftime("%Y-%m-%d")
+        url = "https://api.finmindtrade.com/api/v4/data"
+        params = {
+            "dataset": "TaiwanStockMonthRevenue",
+            "data_id": ticker,
+            "start_date": start,
+            "token": FINMIND_TOKEN,
         }
+        resp = requests.get(url, params=params, timeout=15)
+        data = resp.json()
 
-        payload = {
-            "encodeURIComponent": "1",
-            "step": "1",
-            "firstin": "1",
-            "off": "1",
-            "TYPEK": "all",
-            "co_id": ticker,
-            "b_date": start_date,
-            "e_date": end_date,
-        }
+        if not data.get("data"):
+            result["note"] = f"FinMind 無營收資料：{data.get('msg', '')}"
+            return result
 
-        resp = requests.post(url, data=payload, headers=headers, timeout=15)
-        resp.encoding = "utf-8"
+        rows = data["data"][-6:]  # 取近 6 個月
+        records = []
+        lines = []
+        for i, row in enumerate(rows):
+            rev = row["revenue"]
+            y = row["revenue_year"]
+            m = row["revenue_month"]
+            records.append({"year": y, "month": m, "revenue": rev})
 
-        if resp.status_code == 200 and "<table" in resp.text.lower():
-            try:
-                tables = pd.read_html(resp.text)
-                for tbl in tables:
-                    if len(tbl) > 0 and len(tbl.columns) >= 3:
-                        events = []
-                        for _, row in tbl.iterrows():
-                            vals = [str(v).strip() for v in row.values if str(v).strip() and str(v) != "nan"]
-                            if len(vals) >= 2:
-                                events.append({
-                                    "date": vals[0] if vals else "",
-                                    "company": vals[1] if len(vals) > 1 else "",
-                                    "title": vals[2] if len(vals) > 2 else "",
-                                })
-                        if events:
-                            result["source"] = "mops"
-                            result["events"] = events[:5]  # 最多 5 筆
-                            result["note"] = f"來源：公開資訊觀測站（共 {len(events)} 筆）"
-                            return result
-            except Exception:
-                pass
+            mom = ""
+            if i > 0:
+                prev_rev = rows[i - 1]["revenue"]
+                if prev_rev > 0:
+                    mom = f", 月增率: {(rev / prev_rev - 1) * 100:+.1f}%"
+            lines.append(f"{y}/{m:02d}: {rev / 1e8:.2f} 億{mom}")
 
-        # 若無找到資料
-        result["note"] = "近期無已排定之法說會行程（來源：MOPS）"
+        # 生成原始數據 HTML 表格
+        table_rows = ""
+        for i, row in enumerate(rows):
+            rev = row["revenue"]
+            y = row["revenue_year"]
+            m = row["revenue_month"]
+            mom_str = "—"
+            if i > 0:
+                prev_rev = rows[i - 1]["revenue"]
+                if prev_rev > 0:
+                    mom_val = (rev / prev_rev - 1) * 100
+                    color = "#4ecdc4" if mom_val >= 0 else "#ff6b6b"
+                    mom_str = f'<span style="color:{color}">{mom_val:+.1f}%</span>'
+            table_rows += f"<tr><td>{y}/{m:02d}</td><td style='text-align:right'>{rev / 1e8:.2f} 億</td><td style='text-align:right'>{mom_str}</td></tr>"
+
+        raw_html = f"""<table style="width:100%;border-collapse:collapse;margin-bottom:12px">
+<thead><tr style="border-bottom:1px solid #555"><th style="text-align:left">月份</th><th style="text-align:right">營收</th><th style="text-align:right">月增率</th></tr></thead>
+<tbody>{table_rows}</tbody></table>"""
+
+        result["source"] = "finmind"
+        result["records"] = records
+        result["formatted"] = "\n".join(lines)
+        result["raw_html"] = raw_html
+        result["note"] = f"來源：FinMind（近 {len(records)} 個月）"
         return result
 
     except Exception as e:
-        print(f"  ⚠️ MOPS 法說會查詢失敗：{e}")
+        print(f"  ⚠️ 月營收查詢失敗：{e}")
         return result
 
 
@@ -133,25 +141,25 @@ def get_investor_conference(ticker: str) -> dict:
 # ═══════════════════════════════════════════════════════════
 
 def _build_industry_prompt(ticker: str, name: str, industry: str,
-                           conference_info: dict) -> str:
+                           revenue_info: dict) -> str:
     """建構產業分析 Prompt"""
 
-    # 法說會資料
-    conf_section = ""
-    if conference_info.get("events"):
-        events_text = "\n".join(
-            f"  - {e.get('date', '')} {e.get('company', '')} {e.get('title', '')}"
-            for e in conference_info["events"]
-        )
-        conf_section = f"""
-以下是從公開資訊觀測站查到的法說會資料：
-{events_text}
-請根據以上資料撰寫法說會資訊區塊。
+    # 月營收資料
+    rev_section = ""
+    if revenue_info.get("formatted"):
+        rev_section = f"""
+以下是該公司近 6 個月的月營收數據：
+{revenue_info['formatted']}
+
+請根據以上真實數據分析營收趨勢，包括：
+- 營收趨勢判斷（成長/衰退/持平，是否有季節性）
+- 關鍵觀察（是否突破新高？連續成長或衰退？轉折訊號？）
+- 下月營收觀察重點
 """
     else:
-        conf_section = f"""
-公開資訊觀測站查詢結果：{conference_info.get('note', '近期無法說會行程')}
-請根據你的知識，說明該公司通常的法說會舉辦時間、頻率、觀察重點。
+        rev_section = f"""
+月營收資料暫無法取得。
+請根據你的知識，說明該公司近期營收概況與觀察重點。
 """
 
     return f"""你是一位專業的台股產業研究員，請為以下個股撰寫一份產業地位與展望分析報告。
@@ -172,7 +180,7 @@ def _build_industry_prompt(ticker: str, name: str, industry: str,
     "positioning": "（產業定位與核心業務的 HTML）",
     "growth": "（產業展望與利多題材的 HTML）",
     "peers": "（競爭對手對照表的 HTML，必須包含 <table> 表格）",
-    "conference": "（法說會資訊的 HTML）"
+    "revenue": "（月營收分析的 HTML）"
 }}
 
 ### 各區塊內容要求：
@@ -192,9 +200,8 @@ def _build_industry_prompt(ticker: str, name: str, industry: str,
 - 列出 2-4 家同類型台股上市櫃公司
 - 核心差異要具體說明各家的強項與差異點
 
-**conference（法說會資訊）：**
-{conf_section}
-- 說明最新動態、關鍵觀察期、觀察重點
+**revenue（月營收分析）：**
+{rev_section}
 - 使用 <ul><li> 列點格式
 
 所有內容請用繁體中文撰寫，HTML 標籤要正確閉合。"""
@@ -278,17 +285,17 @@ def get_industry_report(ticker: str, name: str, industry: str = "") -> dict:
         cached["cached"] = True
         return cached
 
-    # 2. 查詢法說會
-    print(f"  🔍 查詢法說會：{ticker}...")
-    conference_info = get_investor_conference(ticker)
+    # 2. 查詢月營收
+    print(f"  🔍 查詢月營收：{ticker}...")
+    revenue_info = get_monthly_revenue(ticker)
 
     # 3. 呼叫 Claude
     if not ANTHROPIC_API_KEY:
-        return _fallback_report(ticker, name, industry, conference_info)
+        return _fallback_report(ticker, name, industry, revenue_info)
 
     try:
         print(f"  🤖 Claude 產業報告生成中：{ticker} {name}...")
-        prompt = _build_industry_prompt(ticker, name, industry, conference_info)
+        prompt = _build_industry_prompt(ticker, name, industry, revenue_info)
         sections = _call_ai(prompt)
 
         report = {
@@ -300,7 +307,8 @@ def get_industry_report(ticker: str, name: str, industry: str = "") -> dict:
                 "positioning": sections.get("positioning", ""),
                 "growth": sections.get("growth", ""),
                 "peers": sections.get("peers", ""),
-                "conference": sections.get("conference", ""),
+                "revenue_raw": revenue_info.get("raw_html", ""),
+                "revenue": sections.get("revenue", ""),
             },
         }
 
@@ -312,7 +320,7 @@ def get_industry_report(ticker: str, name: str, industry: str = "") -> dict:
     except Exception as e:
         err_msg = str(e)
         print(f"  ⚠️ Claude 產業報告失敗：{err_msg}")
-        report = _fallback_report(ticker, name, industry, conference_info)
+        report = _fallback_report(ticker, name, industry, revenue_info)
         # 辨識常見錯誤，給使用者明確提示
         if "credit balance is too low" in err_msg:
             report["error_hint"] = "⚠️ Anthropic API 餘額不足，請至 console.anthropic.com/settings/billing 儲值"
@@ -326,15 +334,15 @@ def get_industry_report(ticker: str, name: str, industry: str = "") -> dict:
 
 
 def _fallback_report(ticker: str, name: str, industry: str,
-                     conference_info: dict) -> dict:
+                     revenue_info: dict) -> dict:
     """無 API Key 或 AI 失敗時的備用報告"""
-    conf_html = "<p>法說會資料查詢中，請參考公開資訊觀測站。</p>"
-    if conference_info.get("events"):
+    rev_html = "<p>月營收資料查詢中，請稍後再試。</p>"
+    if revenue_info.get("records"):
         items = "".join(
-            f"<li>{e.get('date', '')} — {e.get('title', '')}</li>"
-            for e in conference_info["events"]
+            f"<li>{r['year']}/{r['month']:02d}：{r['revenue'] / 1e8:.2f} 億</li>"
+            for r in revenue_info["records"]
         )
-        conf_html = f"<ul>{items}</ul>"
+        rev_html = f"<ul>{items}</ul><p>（AI 營收分析需要 ANTHROPIC_API_KEY）</p>"
 
     return {
         "ticker": ticker,
@@ -345,6 +353,7 @@ def _fallback_report(ticker: str, name: str, industry: str,
             "positioning": f"<p>{name}（{ticker}）屬於{industry or '待查'}產業。詳細產業定位分析需要 AI API 支援。</p>",
             "growth": "<p>產業展望分析需要 AI API 支援，請設定 ANTHROPIC_API_KEY。</p>",
             "peers": "<p>競爭對手分析需要 AI API 支援。</p>",
-            "conference": conf_html,
+            "revenue_raw": revenue_info.get("raw_html", ""),
+            "revenue": rev_html,
         },
     }

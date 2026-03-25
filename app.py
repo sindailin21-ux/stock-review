@@ -1804,7 +1804,7 @@ function _renderReport(d){
   html+='<div class="modal-section"><h3>1. 產業定位與核心業務</h3>'+(s.positioning||'<p>無資料</p>')+'</div>';
   html+='<div class="modal-section"><h3>2. 產業展望與利多題材</h3>'+(s.growth||'<p>無資料</p>')+'</div>';
   html+='<div class="modal-section"><h3>3. 同類型競爭對手</h3>'+(s.peers||'<p>無資料</p>')+'</div>';
-  html+='<div class="modal-section"><h3>4. 法說會資訊</h3>'+(s.conference||'<p>無資料</p>')+'</div>';
+  html+='<div class="modal-section"><h3>4. 月營收動態</h3>'+(s.revenue_raw||'')+(s.revenue||'<p>無資料</p>')+'</div>';
   if(d.generated_at){
     html+='<div class="modal-footer">報告生成：'+d.generated_at+(d.cached?' ✅ 快取命中（7 天有效）':' 🤖 AI 即時生成')+'</div>';
   }
@@ -1948,6 +1948,7 @@ __NAV__
 
 <script>
 function tvUrl(sid){return 'https://www.wantgoo.com/stock/'+sid+'/technical-chart';}
+function openInstChart(sid,name){window.open("/institutional-chart-popup/"+sid+"?name="+encodeURIComponent(name||""),"inst_chart_"+sid,"width=750,height=480,scrollbars=no,resizable=yes");}
 
 function loadFromPortfolio(){
   document.getElementById('statusNote').textContent='載入持股中...';
@@ -2930,7 +2931,7 @@ function _renderReport(d){
   html+='<div class="modal-section"><h3>1. 產業定位與核心業務</h3>'+(s.positioning||'<p>無資料</p>')+'</div>';
   html+='<div class="modal-section"><h3>2. 產業展望與利多題材</h3>'+(s.growth||'<p>無資料</p>')+'</div>';
   html+='<div class="modal-section"><h3>3. 同類型競爭對手</h3>'+(s.peers||'<p>無資料</p>')+'</div>';
-  html+='<div class="modal-section"><h3>4. 法說會資訊</h3>'+(s.conference||'<p>無資料</p>')+'</div>';
+  html+='<div class="modal-section"><h3>4. 月營收動態</h3>'+(s.revenue_raw||'')+(s.revenue||'<p>無資料</p>')+'</div>';
   if(d.generated_at){
     html+='<div class="modal-footer">報告生成：'+d.generated_at+(d.cached?' ✅ 快取命中（7 天有效）':' 🤖 Claude AI 即時生成')+'</div>';
   }
